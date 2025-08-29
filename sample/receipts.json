@@ -1,0 +1,33 @@
+[
+  {
+    "id": "b1d9c0c1-7f65-4c3a-8f1e-111111111111",
+    "date": "2025-01-12",
+    "merchant": "Mercury Dental",
+    "amount": 18900,
+    "currency": "USD",
+    "category": "Dental",
+    "notes": "Cleaning and x-rays",
+    "reimbursed": false
+  },
+  {
+    "id": "c2e0d1e2-8a76-5d4b-9f2f-222222222222",
+    "date": "2025-02-02",
+    "merchant": "OptiVision Clinic",
+    "amount": 7500,
+    "currency": "USD",
+    "category": "Vision",
+    "notes": "Eye exam",
+    "reimbursed": false
+  },
+  {
+    "id": "d3f1e2f3-9b87-6e5c-af30-333333333333",
+    "date": "2025-03-15",
+    "merchant": "GoodRx Pharmacy",
+    "amount": 2200,
+    "currency": "USD",
+    "category": "RX",
+    "notes": "Prescription refill",
+    "reimbursed": true
+  }
+]
+

@@ -1,0 +1,19 @@
+{
+  "name": "smart-hsa-receipt-vault",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "demo": "ts-node --esm scripts/demo.ts",
+    "demo:build": "npm run build && node dist/scripts/demo.js"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.0",
+    "@types/react": "~19.0.10"
+  },
+  "dependencies": {
+    "expo": "^53.0.20"
+  }
+}
