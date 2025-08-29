@@ -1,5 +1,5 @@
 import * as WebBrowser from 'expo-web-browser';
-import * as SecureStore from 'expo-secure-store';
+import * as SecureStore from '../utils/secureStore';
 import * as AuthSession from 'expo-auth-session';
 import { useAuthRequest, DiscoveryDocument } from 'expo-auth-session';
 import { useEffect, useMemo, useState } from 'react';
@@ -73,4 +73,3 @@ export function useGoogleAuth() {
 
   return { request, accessToken, refreshToken, signIn, signOut };
 }
-

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Alert, Button, ScrollView, Text, TextInput, View } from 'react-native';
+import { Alert, Button, ScrollView, Text, TextInput, View, Platform, Image } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import { extractTextFromImage } from '../ocr/ocr';
@@ -8,11 +8,13 @@ import { buildDrivePath, buildFileName } from '../../../src/core/naming';
 import { generateKey, encryptBytes } from '../../../src/core/crypto';
 import { ensureFolder, uploadEncryptedBlob } from '../google/drive';
 import { readUriToBytes } from '../utils/bytes';
+import { cleanupImage } from '../utils/imageCleanup';
 
 export default function CaptureScreen() {
   const [fileUri, setFileUri] = useState<string | null>(null);
-  const [fileExt, setFileExt] = useState<'jpg' | 'jpeg' | 'png' | 'heic' | 'pdf' | null>(null);
+  const [fileExt, setFileExt] = useState<string | null>(null);
   const [ocrText, setOcrText] = useState<string>('');
+  const [cleanUri, setCleanUri] = useState<string | null>(null);
   const [date, setDate] = useState<string>('2025-01-01');
   const [merchant, setMerchant] = useState<string>('');
   const [amountCents, setAmountCents] = useState<string>('');
@@ -20,12 +22,23 @@ export default function CaptureScreen() {
   const { accessToken, signIn } = useGoogleAuth();
 
   const pickImage = async () => {
-    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 1 });
+    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'] as any, quality: 1 });
     if (!res.canceled && res.assets?.[0]?.uri) {
-      const uri = res.assets[0].uri;
+      const asset = res.assets[0];
+      const uri = asset.uri;
       setFileUri(uri);
-      setFileExt('jpg');
-      const ocr = await extractTextFromImage(uri);
+      const ext = (asset.fileName?.split('.').pop() || uri.split('?')[0].split('.').pop() || '').toLowerCase();
+      setFileExt(ext || 'jpg');
+      // Clean up image (web only for now)
+      if (Platform.OS === 'web') {
+        try {
+          const cleaned = await cleanupImage(uri);
+          setCleanUri(cleaned.uri);
+        } catch {}
+      }
+      const ocrSource = cleanUri || uri;
+      setOcrText('Extracting text…');
+      const ocr = await extractTextFromImage(ocrSource);
       setOcrText(ocr.text);
     }
   };
@@ -56,10 +69,10 @@ export default function CaptureScreen() {
 
     // Encrypt the selected file (image/PDF) bytes
     const dataKey = await generateKey();
-    const fileBytes = await readUriToBytes(fileUri);
+    const fileBytes = await readUriToBytes(cleanUri || fileUri);
     const { ciphertext } = await encryptBytes(dataKey, fileBytes);
-    const ext = fileExt === 'pdf' ? 'pdf.enc' : 'img.enc';
-    const fileId = await uploadEncryptedBlob({ folderId, name: `${baseName}.${ext}`, bytes: ciphertext, token: accessToken });
+    const encryptedName = `${baseName}.${fileExt === 'pdf' ? 'pdf' : (fileExt || 'bin')}.enc`;
+    const fileId = await uploadEncryptedBlob({ folderId, name: encryptedName, bytes: ciphertext, token: accessToken, originalExt: fileExt || undefined });
     Alert.alert('Uploaded', `File ID: ${fileId}`);
   };
 
@@ -68,6 +81,14 @@ export default function CaptureScreen() {
       <Button title="Pick Image" onPress={pickImage} />
       <View style={{ height: 8 }} />
       <Button title="Pick PDF" onPress={pickPdf} />
+      {cleanUri && (
+        <>
+          <View style={{ height: 12 }} />
+          <Text style={{ fontWeight: '600' }}>Cleaned preview</Text>
+          {/* RN Image renders data URLs on web; native path can be added later */}
+          <Image source={{ uri: cleanUri }} style={{ width: '100%', height: 200, resizeMode: 'contain', backgroundColor: '#fafafa' }} />
+        </>
+      )}
       <View style={{ height: 12 }} />
       <Text>Date (YYYY-MM-DD)</Text>
       <TextInput value={date} onChangeText={setDate} style={{ borderWidth: 1, padding: 8, borderRadius: 6 }} />

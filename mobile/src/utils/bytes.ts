@@ -1,6 +1,11 @@
 import * as FileSystem from 'expo-file-system';
 
 export async function readUriToBytes(uri: string): Promise<Uint8Array> {
+  // Handle data URLs directly
+  if (uri.startsWith('data:')) {
+    const base64 = uri.substring(uri.indexOf(',') + 1);
+    return base64ToUint8Array(base64);
+  }
   // Prefer FileSystem to support file:// URIs on native and web
   const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
   return base64ToUint8Array(base64);
@@ -13,4 +18,3 @@ function base64ToUint8Array(base64: string): Uint8Array {
   for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i) & 0xff;
   return bytes;
 }
-

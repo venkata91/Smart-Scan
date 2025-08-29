@@ -1,32 +1,49 @@
 // Minimal Drive client using fetch + bearer token.
 
-export async function ensureFolder(pathParts: string[], token: string): Promise<string> {
-  // For MVP: flatten into a single folder under App root named by joined path.
-  // Production: create nested folders by searching parent IDs.
-  const name = pathParts.join(' / ');
-  const q = encodeURIComponent(`name='${name}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
-  const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+async function findFolder(name: string, parentId: string, token: string): Promise<string | null> {
+  const qParts = [
+    `mimeType='application/vnd.google-apps.folder'`,
+    `name='${name.replace(/'/g, "\\'")}'`,
+    `'${parentId}' in parents`,
+    'trashed=false',
+  ];
+  const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(qParts.join(' and '))}&fields=files(id,name)`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   const data = await res.json();
-  if (data.files?.length) return data.files[0].id;
+  return data.files?.[0]?.id ?? null;
+}
 
+async function createFolder(name: string, parentId: string, token: string): Promise<string> {
   const metaRes = await fetch('https://www.googleapis.com/drive/v3/files', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, mimeType: 'application/vnd.google-apps.folder' }),
+    body: JSON.stringify({ name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] }),
   });
   const meta = await metaRes.json();
   return meta.id as string;
 }
 
+export async function ensureFolder(pathParts: string[], token: string): Promise<string> {
+  // Create nested folder structure under Drive root
+  let parentId = 'root';
+  for (const part of pathParts) {
+    const existing = await findFolder(part, parentId, token);
+    parentId = existing ?? (await createFolder(part, parentId, token));
+  }
+  return parentId;
+}
+
 export async function uploadEncryptedBlob(params: {
   folderId: string;
-  name: string; // final file name to create in Drive
+  name: string; // final file name to create in Drive (e.g., base.pdf.enc)
   bytes: Uint8Array;
   token: string;
+  originalExt?: string;
 }): Promise<string> {
-  const metadata = { name: params.name, parents: [params.folderId] };
+  const metadata: Record<string, any> = { name: params.name, parents: [params.folderId] };
+  if (params.originalExt) {
+    metadata.appProperties = { originalExt: params.originalExt };
+  }
   const boundary = 'foo_bar_baz_' + Math.random().toString(36).slice(2);
   const body =
     `--${boundary}\r\n` +
