@@ -5,10 +5,10 @@ import * as DocumentPicker from 'expo-document-picker';
 import { extractTextFromImage } from '../ocr/ocr';
 import { useGoogleAuth } from '../hooks/useGoogleAuth';
 import { buildDrivePath, buildFileName } from '../../../src/core/naming';
-import { generateKey, encryptBytes } from '../../../src/core/crypto';
 import { ensureFolder, uploadEncryptedBlob } from '../google/drive';
 import { readUriToBytes } from '../utils/bytes';
 import { cleanupImage } from '../utils/imageCleanup';
+import { parseReceiptFields } from '../utils/receiptParse';
 
 export default function CaptureScreen() {
   const [fileUri, setFileUri] = useState<string | null>(null);
@@ -30,16 +30,22 @@ export default function CaptureScreen() {
       const ext = (asset.fileName?.split('.').pop() || uri.split('?')[0].split('.').pop() || '').toLowerCase();
       setFileExt(ext || 'jpg');
       // Clean up image (web only for now)
+      let ocrSource = uri;
       if (Platform.OS === 'web') {
         try {
           const cleaned = await cleanupImage(uri);
           setCleanUri(cleaned.uri);
+          ocrSource = cleaned.uri;
         } catch {}
       }
-      const ocrSource = cleanUri || uri;
       setOcrText('Extracting text…');
       const ocr = await extractTextFromImage(ocrSource);
       setOcrText(ocr.text);
+      const parsed = parseReceiptFields(ocr.text || '');
+      if (parsed.date) setDate(parsed.date);
+      if (parsed.merchant) setMerchant(parsed.merchant);
+      if (parsed.amountCents) setAmountCents(parsed.amountCents);
+      if (parsed.currency) setCurrency(parsed.currency);
     }
   };
 
@@ -50,30 +56,55 @@ export default function CaptureScreen() {
       const uri = asset.uri as string;
       setFileUri(uri);
       setFileExt('pdf');
-      setOcrText('(OCR for PDF not extracted — uploading encrypted PDF)');
+      setOcrText('(OCR for PDF not extracted — will upload PDF)');
     }
   };
 
   const upload = async () => {
-    if (!accessToken) {
-      await signIn();
-      return;
+    try {
+      let token = accessToken;
+      if (!token) {
+        token = await signIn();
+        if (!token) return; // user cancelled or failed auth
+      }
+      if (!fileUri) { Alert.alert('Pick an image or PDF first'); return; }
+      const amount = parseInt(amountCents || '0', 10);
+      const receipt = { id: crypto.randomUUID(), date, merchant, amount, currency };
+      const baseName = buildFileName(receipt as any);
+      const path = buildDrivePath(receipt as any);
+
+      const folderId = await ensureFolder(path.split('/'), token);
+
+      // PDFs: upload original only
+      if (fileExt === 'pdf') {
+        const pdfBytes = await readUriToBytes(fileUri);
+        const pdfName = `${baseName}.pdf`;
+        const pdfId = await uploadEncryptedBlob({ folderId, name: pdfName, bytes: pdfBytes, token, originalExt: 'pdf', contentType: 'application/pdf' });
+        Alert.alert('Uploaded', `PDF File ID: ${pdfId}`);
+        return;
+      }
+
+      // Images: upload both original and cleaned (if available)
+      const uploads: string[] = [];
+      const originalExt = (fileExt || 'jpg').toLowerCase();
+      const originalName = `${baseName}.orig.${originalExt}`;
+      const originalType = originalExt === 'png' ? 'image/png' : originalExt === 'jpg' || originalExt === 'jpeg' ? 'image/jpeg' : 'application/octet-stream';
+      const originalBytes = await readUriToBytes(fileUri);
+      const originalId = await uploadEncryptedBlob({ folderId, name: originalName, bytes: originalBytes, token, originalExt, contentType: originalType });
+      uploads.push(`orig: ${originalId}`);
+
+      if (cleanUri) {
+        const cleanName = `${baseName}.clean.png`;
+        const cleanBytes = await readUriToBytes(cleanUri);
+        const cleanId = await uploadEncryptedBlob({ folderId, name: cleanName, bytes: cleanBytes, token, originalExt: 'png', contentType: 'image/png' });
+        uploads.push(`clean: ${cleanId}`);
+      }
+
+      Alert.alert('Uploaded', uploads.join('\n'));
+    } catch (e: any) {
+      console.error('Upload failed', e);
+      Alert.alert('Upload failed', e?.message || 'Unknown error');
     }
-    if (!fileUri) { Alert.alert('Pick an image or PDF first'); return; }
-    const amount = parseInt(amountCents || '0', 10);
-    const receipt = { id: crypto.randomUUID(), date, merchant, amount, currency };
-    const baseName = buildFileName(receipt as any);
-    const path = buildDrivePath(receipt as any);
-
-    const folderId = await ensureFolder(path.split('/'), accessToken);
-
-    // Encrypt the selected file (image/PDF) bytes
-    const dataKey = await generateKey();
-    const fileBytes = await readUriToBytes(cleanUri || fileUri);
-    const { ciphertext } = await encryptBytes(dataKey, fileBytes);
-    const encryptedName = `${baseName}.${fileExt === 'pdf' ? 'pdf' : (fileExt || 'bin')}.enc`;
-    const fileId = await uploadEncryptedBlob({ folderId, name: encryptedName, bytes: ciphertext, token: accessToken, originalExt: fileExt || undefined });
-    Alert.alert('Uploaded', `File ID: ${fileId}`);
   };
 
   return (
@@ -86,10 +117,20 @@ export default function CaptureScreen() {
           <View style={{ height: 12 }} />
           <Text style={{ fontWeight: '600' }}>Cleaned preview</Text>
           {/* RN Image renders data URLs on web; native path can be added later */}
-          <Image source={{ uri: cleanUri }} style={{ width: '100%', height: 200, resizeMode: 'contain', backgroundColor: '#fafafa' }} />
+          <Image
+            source={{ uri: cleanUri }}
+            resizeMode="contain"
+            style={{ width: '100%', height: 200, backgroundColor: '#fafafa' }}
+          />
         </>
       )}
       <View style={{ height: 12 }} />
+      {!accessToken && (
+        <>
+          <Button title="Sign in with Google" onPress={signIn as any} />
+          <View style={{ height: 12 }} />
+        </>
+      )}
       <Text>Date (YYYY-MM-DD)</Text>
       <TextInput value={date} onChangeText={setDate} style={{ borderWidth: 1, padding: 8, borderRadius: 6 }} />
       <View style={{ height: 8 }} />
@@ -102,7 +143,8 @@ export default function CaptureScreen() {
       <Text>Currency</Text>
       <TextInput value={currency} onChangeText={setCurrency} style={{ borderWidth: 1, padding: 8, borderRadius: 6 }} />
       <View style={{ height: 12 }} />
-      <Button title={accessToken ? 'Encrypt + Upload' : 'Sign in with Google'} onPress={upload} />
+      <Button title="Upload to Drive" onPress={upload} />
+      <Text style={{ color: '#666', marginTop: 6 }}>{accessToken ? 'Signed in' : 'Not signed in — will prompt on upload'}</Text>
       <View style={{ height: 12 }} />
       <Text selectable style={{ color: '#666' }}>{ocrText || 'OCR text will appear here.'}</Text>
     </ScrollView>

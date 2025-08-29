@@ -39,27 +39,36 @@ export async function uploadEncryptedBlob(params: {
   bytes: Uint8Array;
   token: string;
   originalExt?: string;
+  contentType?: string; // defaults to application/octet-stream
 }): Promise<string> {
   const metadata: Record<string, any> = { name: params.name, parents: [params.folderId] };
   if (params.originalExt) {
     metadata.appProperties = { originalExt: params.originalExt };
   }
-  const boundary = 'foo_bar_baz_' + Math.random().toString(36).slice(2);
-  const body =
+  const boundary = '----hsavault-' + Math.random().toString(36).slice(2);
+  const head =
     `--${boundary}\r\n` +
     'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
     JSON.stringify(metadata) +
     `\r\n--${boundary}\r\n` +
-    'Content-Type: application/octet-stream\r\n\r\n';
-
+    `Content-Type: ${params.contentType || 'application/octet-stream'}\r\n\r\n`;
   const tail = `\r\n--${boundary}--`;
-  const blob = new Blob([body, params.bytes, tail], { type: 'multipart/related; boundary=' + boundary });
+
+  const contentType = `multipart/related; boundary=${boundary}`;
+  const bodyBlob = new Blob([head, params.bytes, tail], { type: contentType });
 
   const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${params.token}` },
-    body: blob as any,
+    headers: {
+      Authorization: `Bearer ${params.token}`,
+      'Content-Type': contentType,
+    },
+    body: bodyBlob as any,
   });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Drive upload failed: ${res.status} ${text}`);
+  }
   const data = await res.json();
   return data.id as string;
 }
