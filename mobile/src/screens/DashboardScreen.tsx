@@ -3,7 +3,8 @@ import { ActivityIndicator, Button, ScrollView, Text, TextInput, View, RefreshCo
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../App';
 import { useGoogleAuth } from '../hooks/useGoogleAuth';
-import { listReceiptMetaFiles, getFileText, updateFileText } from '../google/drive';
+// Switch Dashboard data source to Google Sheets registry
+import { findOrCreateSpreadsheet, listAllReceipts, updateReimbursedCell, type ReceiptRow } from '../google/sheets';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Dashboard'>;
 
@@ -21,7 +22,7 @@ type ReceiptMeta = {
 export default function DashboardScreen({ navigation }: Props) {
   const { accessToken, signIn } = useGoogleAuth();
   const [loading, setLoading] = useState(false);
-  const [items, setItems] = useState<Array<{ id: string; name: string; meta: ReceiptMeta }>>([]);
+  const [items, setItems] = useState<Array<{ id: string; row: ReceiptRow; meta: ReceiptMeta }>>([]);
   const [updating, setUpdating] = useState<Record<string, boolean>>({});
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -32,6 +33,8 @@ export default function DashboardScreen({ navigation }: Props) {
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
   const [editing, setEditing] = useState<Record<string, boolean>>({});
   const [drafts, setDrafts] = useState<Record<string, ReceiptMeta>>({});
+  const [pageIndex, setPageIndex] = useState<number>(0);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -63,25 +66,22 @@ export default function DashboardScreen({ navigation }: Props) {
         }
       };
 
-      const files = await withAuthRetry((t) => listReceiptMetaFiles(t));
-      const results: Array<{ id: string; name: string; meta: ReceiptMeta }> = [];
-      for (const f of files) {
-        try {
-          const txt = await withAuthRetry((t) => getFileText(f.id, t));
-          const meta = JSON.parse(txt);
-          results.push({ id: f.id, name: f.name, meta: {
-            provider: meta.provider,
-            patientName: meta.patientName,
-            amountCents: meta.amountCents,
-            currency: meta.currency,
-            date: meta.date,
-            startDate: meta.startDate,
-            endDate: meta.endDate,
-            reimbursed: !!meta.reimbursed,
-          }});
-        } catch {}
-      }
+      const spreadsheetId = await withAuthRetry((t) => findOrCreateSpreadsheet(t));
+      const all = await withAuthRetry((t) => listAllReceipts(t, spreadsheetId));
+      // Build items from bottom (newest at end since we append); slice last 20
+      const sliced = all.slice(-20).reverse();
+      const results: Array<{ id: string; row: ReceiptRow; meta: ReceiptMeta }>= sliced.map((r) => ({ id: String(r.rowNumber), row: r, meta: {
+        provider: r.provider,
+        patientName: r.patientName,
+        amountCents: r.amountCents,
+        currency: r.currency,
+        date: r.startDate,
+        startDate: r.startDate,
+        endDate: r.endDate,
+        reimbursed: !!r.reimbursed,
+      }}));
       setItems(results);
+      setPageIndex(20);
     } catch (e: any) {
       const msg = String(e?.message || e || '');
       if (msg !== 'AUTH_REQUIRED') setErrorMsg(msg);
@@ -137,19 +137,28 @@ export default function DashboardScreen({ navigation }: Props) {
       {loading ? <ActivityIndicator /> : null}
       {authRequired ? (
         <View style={{ marginBottom: 12 }}>
-          <Text style={{ color: '#b00', marginBottom: 8 }}>Session expired. Please sign in to refresh.</Text>
+          <Text style={{ color: '#b00', marginBottom: 8 }}>
+            {stopAutoReload ? 'Too many authorization failures. Please sign in to resume.' : 'Session expired. Please sign in to refresh.'}
+          </Text>
           <Button title="Sign in with Google" onPress={async () => {
             const t = await signIn();
             if (t) {
-              // trigger reload by updating a dummy state or re-running effect
+              // reset auth failure state and reload
               setAuthRequired(false);
               setLoading(true);
-              // simple trick: re-run effect by toggling dates quickly
+              setAuthFailCount(0);
+              setStopAutoReload(false);
               const s = startDate; const e = endDate;
               setStartDate(s);
               setEndDate(e);
+              reload();
             }
           }} />
+          {stopAutoReload ? (
+            <View style={{ marginTop: 8 }}>
+              <Button title="Try again" onPress={() => { setAuthFailCount(0); setStopAutoReload(false); reload(); }} />
+            </View>
+          ) : null}
         </View>
       ) : null}
       {errorMsg ? <Text style={{ color: '#b00', marginBottom: 12 }}>{errorMsg}</Text> : null}
@@ -184,7 +193,6 @@ export default function DashboardScreen({ navigation }: Props) {
                       setUpdating((u) => ({ ...u, [it.id]: true }));
                       try {
                         const newMeta = { ...it.meta, reimbursed: !it.meta.reimbursed } as ReceiptMeta & Record<string, any>;
-                        const text = JSON.stringify(newMeta, null, 2);
                         let token = accessToken;
                         const withAuthRetry = async <T,>(fn: (t: string) => Promise<T>): Promise<T> => {
                           try { return await fn(token); } catch (e: any) {
@@ -195,7 +203,8 @@ export default function DashboardScreen({ navigation }: Props) {
                             throw e;
                           }
                         };
-                        await withAuthRetry((t) => updateFileText({ fileId: it.id, token: t, text }));
+                        const spreadsheetId = await withAuthRetry((t) => findOrCreateSpreadsheet(t));
+                        await withAuthRetry((t) => updateReimbursedCell(t, spreadsheetId, it.row.rowNumber, !it.meta.reimbursed));
                         setItems((arr) => arr.map((x) => (x.id === it.id ? { ...x, meta: newMeta } : x)));
                       } catch (e: any) {
                         console.error('Update reimbursed failed', e);
@@ -248,7 +257,6 @@ export default function DashboardScreen({ navigation }: Props) {
                       amountCents: draft.amountCents ?? it.meta.amountCents,
                       currency: draft.currency ?? it.meta.currency,
                     } as any;
-                    const text = JSON.stringify(newMeta, null, 2);
                     let token = accessToken;
                     const withAuthRetry = async <T,>(fn: (t: string) => Promise<T>): Promise<T> => {
                       try { return await fn(token); } catch (e: any) {
@@ -259,7 +267,21 @@ export default function DashboardScreen({ navigation }: Props) {
                         throw e;
                       }
                     };
-                    await withAuthRetry((t) => updateFileText({ fileId: it.id, token: t, text }));
+                    const spreadsheetId = await withAuthRetry((t) => findOrCreateSpreadsheet(t));
+                    const rowValues = [
+                      newMeta.provider ?? '',
+                      newMeta.patientName ?? '',
+                      newMeta.amountCents ?? '',
+                      newMeta.currency ?? '',
+                      (newMeta as any).startDate ?? '',
+                      (newMeta as any).endDate ?? '',
+                    ];
+                    const range = `Receipts!B${it.row.rowNumber}:G${it.row.rowNumber}`;
+                    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=RAW`, {
+                      method: 'PUT',
+                      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ values: [rowValues] }),
+                    });
                     setItems((arr) => arr.map((x) => (x.id === it.id ? { ...x, meta: newMeta } : x)));
                     setEditing((e) => ({ ...e, [it.id]: false }));
                   } catch (e: any) {
@@ -275,8 +297,49 @@ export default function DashboardScreen({ navigation }: Props) {
           )}
         </View>
       ))}
+      {items.length >= pageIndex ? (
+        <View style={{ marginTop: 8 }}>
+          <Button title={loadingMore ? 'Loading…' : 'Show more'} disabled={loadingMore} onPress={async () => {
+            if (!accessToken) return;
+            setLoadingMore(true);
+            try {
+              let token = accessToken;
+              const withAuthRetry = async <T,>(fn: (t: string) => Promise<T>): Promise<T> => {
+                try { return await fn(token); } catch (e: any) {
+                  const msg = String(e?.message || e || '');
+                  if (msg.includes('401') || msg.includes('UNAUTHENTICATED') || msg.includes('Invalid Credentials')) {
+                    const t2 = await signIn(); if (!t2) throw e; token = t2; return await fn(token);
+                  }
+                  throw e;
+                }
+              };
+              const spreadsheetId = await withAuthRetry((t) => findOrCreateSpreadsheet(t));
+              const all = await withAuthRetry((t) => listAllReceipts(t, spreadsheetId));
+              const start = all.length - (pageIndex + 20);
+              const end = all.length - pageIndex;
+              const slice = all.slice(Math.max(0, start), Math.max(0, end)).reverse();
+              const newItems = slice.map((r) => ({ id: String(r.rowNumber), row: r, meta: {
+                provider: r.provider,
+                patientName: r.patientName,
+                amountCents: r.amountCents,
+                currency: r.currency,
+                date: r.startDate,
+                startDate: r.startDate,
+                endDate: r.endDate,
+                reimbursed: !!r.reimbursed,
+              }}));
+              setItems((prev) => [...prev, ...newItems]);
+              setPageIndex(pageIndex + 20);
+            } finally {
+              setLoadingMore(false);
+            }
+          }} />
+        </View>
+      ) : null}
       <View style={{ height: 16 }} />
-      <Button title="Scan Receipts" onPress={() => navigation.navigate('Scan')} />
+      {navigation && (navigation as any).navigate ? (
+        <Button title="Scan Receipts" onPress={() => navigation.navigate('Scan')} />
+      ) : null}
     </ScrollView>
   );
 }

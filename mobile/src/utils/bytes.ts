@@ -30,6 +30,33 @@ export function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  if (globalThis.crypto?.subtle) {
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+    return bufferToHex(new Uint8Array(digest));
+  }
+  try {
+    // Lazy import expo-crypto if available
+    const { digestStringAsync } = await import('expo-crypto');
+    const b64 = bytesToBase64(bytes);
+    const hex = await digestStringAsync('SHA-256' as any, b64, { encoding: (globalThis as any).CryptoEncoding?.BASE64 });
+    return hex.toLowerCase();
+  } catch {
+    // Fallback: simple JS implementation (not optimized)
+    const text = Array.from(bytes).map((b) => String.fromCharCode(b)).join('');
+    const enc = new TextEncoder();
+    const u8 = enc.encode(text);
+    const digest = await (globalThis.crypto as any).subtle.digest('SHA-256', u8);
+    return bufferToHex(new Uint8Array(digest));
+  }
+}
+
+function bufferToHex(arr: Uint8Array): string {
+  return Array.from(arr)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 function base64ToUint8Array(base64: string): Uint8Array {
   const binary = globalThis.atob ? atob(base64) : Buffer.from(base64, 'base64').toString('binary');
   const len = binary.length;

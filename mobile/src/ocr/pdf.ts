@@ -41,3 +41,28 @@ export async function extractTextFromPdf(uri: string): Promise<OCRResult> {
 
   return { text: texts.join('\n\n') };
 }
+
+// Render first page of a PDF to a PNG data URL (web only)
+export async function renderPdfFirstPageDataUrl(uri: string): Promise<string | null> {
+  try {
+    const resp = await fetch(uri);
+    if (!resp.ok) return null;
+    const buf = await resp.arrayBuffer();
+    const loadingTask = (pdfjsLib as any).getDocument({ data: buf, disableWorker: true });
+    const pdf = await loadingTask.promise;
+    const page = await pdf.getPage(1);
+    const viewport0 = page.getViewport({ scale: 1 });
+    const targetWidth = 800;
+    const scale = Math.max(1, targetWidth / viewport0.width);
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    await page.render({ canvasContext: ctx as any, viewport }).promise;
+    return canvas.toDataURL('image/png');
+  } catch {
+    return null;
+  }
+}

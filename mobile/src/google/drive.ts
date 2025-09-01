@@ -74,22 +74,18 @@ export async function uploadEncryptedBlob(params: {
 }
 
 // List uploaded receipt metadata sidecar files (plain JSON)
-export async function listReceiptMetaFiles(token: string): Promise<Array<{ id: string; name: string }>> {
-  const out: Array<{ id: string; name: string }> = [];
-  let pageToken: string | undefined = undefined;
-  do {
-    const url = new URL('https://www.googleapis.com/drive/v3/files');
-    url.searchParams.set('q', "name contains '.meta.json' and trashed=false");
-    url.searchParams.set('fields', 'nextPageToken, files(id,name)');
-    url.searchParams.set('pageSize', '100');
-    if (pageToken) url.searchParams.set('pageToken', pageToken);
-    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
-    if (!res.ok) throw new Error(`Drive list failed: ${res.status}`);
-    const data = await res.json();
-    for (const f of data.files || []) out.push({ id: f.id, name: f.name });
-    pageToken = data.nextPageToken;
-  } while (pageToken);
-  return out;
+export async function listReceiptMetaFiles(token: string, opts?: { pageToken?: string; pageSize?: number }): Promise<{ files: Array<{ id: string; name: string; modifiedTime?: string }>; nextPageToken?: string }>{
+  const url = new URL('https://www.googleapis.com/drive/v3/files');
+  url.searchParams.set('q', "name contains '.meta.json' and trashed=false");
+  url.searchParams.set('orderBy', 'modifiedTime desc');
+  url.searchParams.set('fields', 'nextPageToken, files(id,name,modifiedTime)');
+  url.searchParams.set('pageSize', String(opts?.pageSize ?? 20));
+  if (opts?.pageToken) url.searchParams.set('pageToken', opts.pageToken);
+  const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`Drive list failed: ${res.status}`);
+  const data = await res.json();
+  const files = (data.files || []).map((f: any) => ({ id: f.id, name: f.name, modifiedTime: f.modifiedTime }));
+  return { files, nextPageToken: data.nextPageToken };
 }
 
 export async function getFileText(fileId: string, token: string): Promise<string> {
