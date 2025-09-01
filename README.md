@@ -1,4 +1,4 @@
-Smart HSA Receipt Vault (TypeScript)
+Smart Scan (TypeScript)
 
 Problem
 - HSA users want to capture and store medical receipts now, invest HSA funds longer, and reimburse later — with audit‑proof documentation.
@@ -54,7 +54,7 @@ Next Steps (Product)
   - Secure storage: Keychain/Keystore; file storage in app sandbox.
   - Background sync to Drive + Sheets via OAuth; encryption before upload.
 - Google Integrations:
-  - Drive: Folder structure `/HSA Vault/<Year>/<Provider>/...`; upload encrypted blobs; keep content hashes for dedup.
+- Drive: Folder structure `/Smart Scan/<Year>/...`; upload encrypted blobs; keep content hashes for dedup.
   - Sheets: Append normalized rows; compute running unreimbursed total in‑app and mirror a ‘Total’ cell in Sheet.
 - Export/Import: Create password‑protected archive with encrypted key wrap.
 

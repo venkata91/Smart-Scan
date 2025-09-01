@@ -2,9 +2,9 @@ import 'dotenv/config';
 
 export default () => ({
   expo: {
-    name: 'HSA Vault',
-    slug: 'hsa-vault',
-    scheme: 'hsavault',
+    name: 'Smart Scan',
+    slug: 'smart-scan',
+    scheme: 'smartscan',
     version: '1.0.0',
     orientation: 'portrait',
     icon: './assets/icon.png',

@@ -1,5 +1,6 @@
 import React from 'react';
 import { ScrollView, View, Text, Button, useWindowDimensions, Platform } from 'react-native';
+import { btn as webBtn } from '../web/ui';
 import { useGoogleAuth } from '../hooks/useGoogleAuth';
 import CaptureScreen from './CaptureScreen';
 import DashboardScreen from './DashboardScreen';
@@ -10,20 +11,7 @@ export default function HomeScreen() {
   const { width } = useWindowDimensions();
   const isWide = Platform.OS === 'web' && width >= 1024;
   return (
-    <ScrollView contentContainerStyle={{ padding: 16 }} stickyHeaderIndices={[0]}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#fff', paddingBottom: 8 }}>
-        <Text style={{ fontSize: 18, fontWeight: '600' }}>Smart HSA Receipt Vault</Text>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          {!accessToken ? (
-            <Button title="Sign in" onPress={() => signIn()} />
-          ) : (
-            <>
-              <Text style={{ marginRight: 8 }}>Signed in</Text>
-              <Button title="Sign out" onPress={() => signOut()} />
-            </>
-          )}
-        </View>
-      </View>
+    <ScrollView contentContainerStyle={{ padding: 16 }}>
       <View style={{ flexDirection: isWide ? 'row' : 'column', gap: 16, marginTop: 16, alignItems: 'stretch' }}>
         <View style={isWide ? { width: '30%', borderWidth: 1, borderRadius: 10, padding: 12 } : { borderWidth: 1, borderRadius: 10, padding: 12 }}>
           <Text style={{ fontSize: 16, fontWeight: '600', marginBottom: 8 }}>Scan</Text>
@@ -32,7 +20,12 @@ export default function HomeScreen() {
         <View style={isWide ? { width: '70%', borderWidth: 1, borderRadius: 10, padding: 12 } : { borderWidth: 1, borderRadius: 10, padding: 12 }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
             <Text style={{ fontSize: 16, fontWeight: '600' }}>Dashboard</Text>
-            <Button title={showDashboard ? 'Hide' : 'Load Dashboard'} onPress={() => setShowDashboard((v) => !v)} />
+            {Platform.OS === 'web' ? (
+              // @ts-ignore
+              <button style={webBtn('neutral')} onClick={() => setShowDashboard((v) => !v)}>{showDashboard ? 'Hide' : 'Load Dashboard'}</button>
+            ) : (
+              <Button title={showDashboard ? 'Hide' : 'Load Dashboard'} onPress={() => setShowDashboard((v) => !v)} />
+            )}
           </View>
           {showDashboard ? (
             <View style={{ height: isWide ? 600 : undefined }}>

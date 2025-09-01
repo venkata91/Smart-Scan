@@ -1,6 +1,7 @@
 // Google Sheets integration for receipts registry
 
-const SHEET_TITLE = 'HSA Vault Receipts';
+const SHEET_TITLE = 'Smart Scan Receipts';
+const LEGACY_TITLES = ['HSA Vault Receipts'];
 const TAB_NAME = 'Receipts';
 const HEADERS = [
   'timestamp',
@@ -35,17 +36,25 @@ export type ReceiptRow = {
 
 export async function findOrCreateSpreadsheet(token: string): Promise<string> {
   if (!token) throw new Error('Missing access token');
-  // Try to find by name via Drive search
-  const q = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and name='" + SHEET_TITLE.replace(/'/g, "\\'") + "' and trashed=false");
-  const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) {
-    const body = await safeText(res);
-    throw new Error(`Drive search failed: ${res.status} ${body}`);
+  // Try to find by name via Drive search (new + legacy)
+  const searchByName = async (name: string) => {
+    const q = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and name='" + name.replace(/'/g, "\\'") + "' and trashed=false");
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null as any;
+    const data = await res.json();
+    return (data.files?.[0]?.id as string) || null;
+  };
+
+  let spreadsheetId: string | null = await searchByName(SHEET_TITLE);
+  if (!spreadsheetId) {
+    for (const legacy of LEGACY_TITLES) {
+      spreadsheetId = await searchByName(legacy);
+      if (spreadsheetId) break;
+    }
   }
-  const data = await res.json();
-  if (data.files?.length) return data.files[0].id as string;
+  if (spreadsheetId) return spreadsheetId;
 
   // Create new spreadsheet
   const createRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
@@ -58,7 +67,7 @@ export async function findOrCreateSpreadsheet(token: string): Promise<string> {
     throw new Error(`Create spreadsheet failed: ${createRes.status} ${body}`);
   }
   const created = await createRes.json();
-  const spreadsheetId = created.spreadsheetId as string | undefined;
+  spreadsheetId = (created.spreadsheetId as string) || null;
   if (!spreadsheetId) throw new Error('Create spreadsheet did not return an id');
   await ensureHeaders(token, spreadsheetId);
   return spreadsheetId;

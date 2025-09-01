@@ -25,9 +25,9 @@ export function buildFileName(receipt: Receipt): string {
   return `${d}_${merchant}_${amountStr}_${currency}`;
 }
 
-/** Build Drive folder path like: HSA Vault/2025/Mercury-Dental */
+/** Build Drive folder path like: Smart Scan/2025 */
 export function buildDrivePath(receipt: Receipt): string {
   const year = receipt.date?.slice(0, 4) || 'Unknown';
   // Store receipts directly under the year folder (no per-merchant subfolders)
-  return `HSA Vault/${year}`;
+  return `Smart Scan/${year}`;
 }

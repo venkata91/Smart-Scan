@@ -27,6 +27,7 @@ const EXTRA = (Constants.expoConfig?.extra ?? {}) as Record<string, string>;
 export function useGoogleAuth() {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
 
   // Choose the proper client per platform
   const clientId = Platform.OS === 'web'
@@ -64,9 +65,10 @@ export function useGoogleAuth() {
     (async () => {
       const stored = await SecureStore.getItemAsync('google_token');
       if (stored) {
-        const { accessToken: at, refreshToken: rt } = JSON.parse(stored);
+        const { accessToken: at, refreshToken: rt, email } = JSON.parse(stored);
         setAccessToken(at);
         setRefreshToken(rt);
+        setUserEmail(email ?? null);
       }
     })();
   }, []);
@@ -81,7 +83,15 @@ export function useGoogleAuth() {
         // When using the proxy, authentication should be populated directly.
         if (auth?.accessToken) {
           setAccessToken(auth.accessToken);
-          await SecureStore.setItemAsync('google_token', JSON.stringify({ accessToken: auth.accessToken, refreshToken: auth.refreshToken }));
+          // Fetch userinfo for email display
+          try {
+            const info = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${auth.accessToken}` } });
+            const json: any = await info.json();
+            setUserEmail(json.email ?? null);
+            await SecureStore.setItemAsync('google_token', JSON.stringify({ accessToken: auth.accessToken, refreshToken: auth.refreshToken, email: json.email ?? null }));
+          } catch {
+            await SecureStore.setItemAsync('google_token', JSON.stringify({ accessToken: auth.accessToken, refreshToken: auth.refreshToken }));
+          }
           return;
         }
         // Native: exchange the code via proxy. Web uses implicit flow and returns authentication directly.
@@ -101,7 +111,15 @@ export function useGoogleAuth() {
               const rt = (token as any).refreshToken ?? (token as any).refresh_token;
               setAccessToken(at);
               setRefreshToken(rt ?? null);
-              await SecureStore.setItemAsync('google_token', JSON.stringify({ accessToken: at, refreshToken: rt ?? null }));
+              // Fetch userinfo for email
+              try {
+                const info = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${at}` } });
+                const json: any = await info.json();
+                setUserEmail(json.email ?? null);
+                await SecureStore.setItemAsync('google_token', JSON.stringify({ accessToken: at, refreshToken: rt ?? null, email: json.email ?? null }));
+              } catch {
+                await SecureStore.setItemAsync('google_token', JSON.stringify({ accessToken: at, refreshToken: rt ?? null }));
+              }
             }
           } catch (e) {
             console.warn('Token exchange failed', e);
@@ -117,7 +135,14 @@ export function useGoogleAuth() {
       const auth = (res as any).authentication;
       if (auth?.accessToken) {
         setAccessToken(auth.accessToken);
-        await SecureStore.setItemAsync('google_token', JSON.stringify({ accessToken: auth.accessToken, refreshToken: auth.refreshToken }));
+        try {
+          const info = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${auth.accessToken}` } });
+          const json: any = await info.json();
+          setUserEmail(json.email ?? null);
+          await SecureStore.setItemAsync('google_token', JSON.stringify({ accessToken: auth.accessToken, refreshToken: auth.refreshToken, email: json.email ?? null }));
+        } catch {
+          await SecureStore.setItemAsync('google_token', JSON.stringify({ accessToken: auth.accessToken, refreshToken: auth.refreshToken }));
+        }
         return auth.accessToken as string;
       }
       const code = (res as any)?.params?.code;
@@ -137,7 +162,14 @@ export function useGoogleAuth() {
           if (at) {
             setAccessToken(at);
             setRefreshToken(rt ?? null);
-            await SecureStore.setItemAsync('google_token', JSON.stringify({ accessToken: at, refreshToken: rt ?? null }));
+            try {
+              const info = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${at}` } });
+              const json: any = await info.json();
+              setUserEmail(json.email ?? null);
+              await SecureStore.setItemAsync('google_token', JSON.stringify({ accessToken: at, refreshToken: rt ?? null, email: json.email ?? null }));
+            } catch {
+              await SecureStore.setItemAsync('google_token', JSON.stringify({ accessToken: at, refreshToken: rt ?? null }));
+            }
             return at as string;
           }
         } catch (e) {
@@ -151,8 +183,9 @@ export function useGoogleAuth() {
   const signOut = async () => {
     setAccessToken(null);
     setRefreshToken(null);
+    setUserEmail(null);
     await SecureStore.deleteItemAsync('google_token');
   };
 
-  return { request, accessToken, refreshToken, signIn, signOut };
+  return { request, accessToken, refreshToken, userEmail, signIn, signOut };
 }

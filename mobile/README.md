@@ -1,4 +1,4 @@
-Smart HSA Receipt Vault — Mobile (Expo + TypeScript)
+Smart Scan — Mobile (Expo + TypeScript)
 
 Summary
 - Expo (TypeScript) app with stubs for:
@@ -24,4 +24,3 @@ Notes
 - OCR: Replace `src/ocr/ocr.ts` stub with ML Kit (expo-mlkit-ocr) or VisionCamera OCR plugin.
 - Drive: `src/google/drive.ts` uses REST with bearer token; upload encrypted blobs only.
 - Shared core: imports from `../../src/core`. Configure Metro to resolve outside workspace or copy core into a local package.
-

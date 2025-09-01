@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Button, ScrollView, Text, TextInput, View, RefreshControl } from 'react-native';
+import { ActivityIndicator, Button, ScrollView, Text, TextInput, View, RefreshControl, Linking, Platform } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../App';
 import { useGoogleAuth } from '../hooks/useGoogleAuth';
 // Switch Dashboard data source to Google Sheets registry
 import { findOrCreateSpreadsheet, listAllReceipts, updateReimbursedCell, deleteRow, type ReceiptRow } from '../google/sheets';
 import { deleteFile } from '../google/drive';
+import { btn as webBtn, input as webInput } from '../web/ui';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Dashboard'>;
 
@@ -41,6 +42,10 @@ export default function DashboardScreen({ navigation }: Props) {
   const [drafts, setDrafts] = useState<Record<string, ReceiptMeta>>({});
   const [pageIndex, setPageIndex] = useState<number>(0);
   const [loadingMore, setLoadingMore] = useState(false);
+  // Web PDF preview state
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   const hasLoadedRef = React.useRef(false);
   useEffect(() => {
@@ -172,6 +177,7 @@ export default function DashboardScreen({ navigation }: Props) {
       setTimeout(() => {
         const el = document.getElementById(`row-${id}`);
         try { el?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch {}
+        try { (document.getElementById(`edit-provider-${id}`) as any)?.focus?.(); } catch {}
       }, 0);
     }
   };
@@ -210,6 +216,53 @@ export default function DashboardScreen({ navigation }: Props) {
 
   const isWeb = typeof document !== 'undefined';
 
+  async function openPdfPreview(fileId?: string | null) {
+    if (!isWeb || !fileId) return;
+    if (!accessToken) return;
+    setPreviewLoading(true);
+    setPreviewOpen(true);
+    try {
+      let token = accessToken;
+      const withAuthRetry = async <T,>(fn: (t: string) => Promise<T>): Promise<T> => {
+        try { return await fn(token); } catch (e: any) {
+          const msg = String(e?.message || e || '');
+          if (msg.includes('401') || msg.includes('UNAUTHENTICATED') || msg.includes('Invalid Credentials')) {
+            const t2 = await signIn(); if (!t2) throw e; token = t2; return await fn(token);
+          }
+          throw e;
+        }
+      };
+      const blob = await withAuthRetry(async (t) => {
+        const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+          headers: { Authorization: `Bearer ${t}` },
+        });
+        if (!res.ok) throw new Error(`Preview fetch failed: ${res.status}`);
+        return await res.blob();
+      });
+      if (previewUrl) try { URL.revokeObjectURL(previewUrl); } catch {}
+      const url = URL.createObjectURL(blob);
+      setPreviewUrl(url);
+    } catch (e) {
+      console.warn('Preview failed', e);
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  // (Reimburse feature removed)
+
+  // Close preview with ESC on web
+  React.useEffect(() => {
+    if (!isWeb) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPreviewOpen(false);
+    };
+    if (previewOpen) {
+      window.addEventListener('keydown', onKey);
+      return () => window.removeEventListener('keydown', onKey);
+    }
+  }, [previewOpen, isWeb]);
+
   return (
     <ScrollView
       contentContainerStyle={{ padding: 16 }}
@@ -217,18 +270,17 @@ export default function DashboardScreen({ navigation }: Props) {
     >
       <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
         {isWeb ? (
-          // @ts-ignore
-          <>
-            <button style={btn('primary')} onClick={() => reload()}>Refresh</button>
-            <button style={btn('neutral')} onClick={() => setSortOrder((p) => (p === 'desc' ? 'asc' : 'desc'))}>{`Sort: ${sortOrder === 'desc' ? 'Newest' : 'Oldest'}`}</button>
-          </>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button style={webBtn('primary')} onClick={() => reload()}>Refresh</button>
+            <button style={webBtn('neutral')} onClick={() => setSortOrder((p) => (p === 'desc' ? 'asc' : 'desc'))}>{`Sort: ${sortOrder === 'desc' ? 'Newest' : 'Oldest'}`}</button>
+          </div>
         ) : (
-          <>
+          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
             <Button title="Refresh" onPress={() => reload()} />
             <View style={{ width: 8 }} />
             {/* Native sort toggle retained */}
             <Button title={`Sort: ${sortOrder === 'desc' ? 'Newest' : 'Oldest'}`} onPress={() => setSortOrder((p) => (p === 'desc' ? 'asc' : 'desc'))} />
-          </>
+          </View>
         )}
       </View>
       <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
@@ -242,25 +294,29 @@ export default function DashboardScreen({ navigation }: Props) {
           {renderDateField(endDate, setEndDate)}
         </View>
       </View>
+      
       <View style={{ height: 12 }} />
       {loading ? <ActivityIndicator /> : null}
       {isWeb ? (
-        <View style={{ marginBottom: 8, flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <View style={{ flex: 1 }}>
-            <Text>Search</Text>
+        <View style={{ marginBottom: 8 }}>
+          {/* @ts-ignore */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ flex: 1, minWidth: 260 }}>
+              {/* @ts-ignore */}
+              <input
+                type="search"
+                value={search}
+                onChange={(e: any) => setSearch(e.target.value)}
+                placeholder="Search provider, patient, date, currency, amount"
+                style={webInput()}
+              />
+            </div>
             {/* @ts-ignore */}
-            <input
-              type="search"
-              value={search}
-              onChange={(e: any) => setSearch(e.target.value)}
-              placeholder="Search provider, patient, date, currency, amount"
-              style={{ width: '100%', padding: 10, border: '1px solid #e5e7eb', borderRadius: 8 }}
-            />
-          </View>
-          {/* @ts-ignore */}
-          <button style={btn('neutral')} onClick={() => setSearch('')}>Clear</button>
-          {/* @ts-ignore */}
-          <button style={btn('primary')} onClick={exportCsvWeb}>Export CSV</button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button style={webBtn('neutral')} onClick={() => setSearch('')}>Clear</button>
+              <button style={webBtn('primary')} onClick={exportCsvWeb}>Export CSV</button>
+            </div>
+          </div>
         </View>
       ) : null}
       {authRequired ? (
@@ -290,18 +346,43 @@ export default function DashboardScreen({ navigation }: Props) {
         </View>
       ) : null}
       {errorMsg ? <Text style={{ color: '#b00', marginBottom: 12 }}>{errorMsg}</Text> : null}
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
         <Text>Status Filter:</Text>
-        <Button title={`All${filterStatus === 'all' ? ' ✓' : ''}`} onPress={() => setFilterStatus('all')} />
-        <Button title={`Reimbursed${filterStatus === 'reimbursed' ? ' ✓' : ''}`} onPress={() => setFilterStatus('reimbursed')} />
-        <Button title={`Unreimbursed${filterStatus === 'unreimbursed' ? ' ✓' : ''}`} onPress={() => setFilterStatus('unreimbursed')} />
+        {isWeb ? (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              style={webBtn(filterStatus === 'all' ? 'primary' : 'neutral', 'sm')}
+              onClick={() => setFilterStatus('all')}
+            >
+              All{filterStatus === 'all' ? ' ✓' : ''}
+            </button>
+            <button
+              style={webBtn(filterStatus === 'reimbursed' ? 'primary' : 'neutral', 'sm')}
+              onClick={() => setFilterStatus('reimbursed')}
+            >
+              Reimbursed{filterStatus === 'reimbursed' ? ' ✓' : ''}
+            </button>
+            <button
+              style={webBtn(filterStatus === 'unreimbursed' ? 'primary' : 'neutral', 'sm')}
+              onClick={() => setFilterStatus('unreimbursed')}
+            >
+              Unreimbursed{filterStatus === 'unreimbursed' ? ' ✓' : ''}
+            </button>
+          </div>
+        ) : (
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <Button title={`All${filterStatus === 'all' ? ' ✓' : ''}`} onPress={() => setFilterStatus('all')} />
+            <Button title={`Reimbursed${filterStatus === 'reimbursed' ? ' ✓' : ''}`} onPress={() => setFilterStatus('reimbursed')} />
+            <Button title={`Unreimbursed${filterStatus === 'unreimbursed' ? ' ✓' : ''}`} onPress={() => setFilterStatus('unreimbursed')} />
+          </View>
+        )}
       </View>
       {isWeb ? (
-        // Web table view with inline actions (datatable) — styled
-        // @ts-ignore
-        <div style={{ maxHeight: 560, overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 10, boxShadow: '0 1px 2px rgba(0,0,0,0.04)', background: 'white', paddingRight: 160 }}>
+        <div>
+        {/* Web table view with inline actions (datatable) — styled */}
+        <div style={{ maxHeight: 560, overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 10, boxShadow: '0 1px 2px rgba(0,0,0,0.04)', background: 'white', paddingRight: 200 }}>
         {/* @ts-ignore */}
-        <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: 14, tableLayout: 'fixed' }}>
+        <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: 13, tableLayout: 'fixed', fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif' }}>
           <thead>
             <tr>
               {renderSortTh('Provider', 'provider', sortCol, sortDir, setSortCol, setSortDir, '20%')}
@@ -319,17 +400,25 @@ export default function DashboardScreen({ navigation }: Props) {
               <tr key={it.id} id={`row-${it.id}`} style={{ borderBottom: '1px solid #f1f5f9', background: idx % 2 === 0 ? '#ffffff' : '#f8fafc' }}>
                 {!editing[it.id] ? (
                   <>
-                    <td style={{ padding: 10, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.meta.provider || ''}</td>
-                    <td style={{ padding: 10, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.meta.patientName || ''}</td>
-                    <td style={{ padding: 10, minWidth: 0 }}>{formatAmount(it.meta.amount)} </td>
-                    <td style={{ padding: 10, minWidth: 0 }}>{it.meta.currency || ''}</td>
-                    <td style={{ padding: 10, minWidth: 0 }}>{it.meta.startDate || (it.meta as any).date || ''}</td>
-                    <td style={{ padding: 10, minWidth: 0 }}>{it.meta.endDate || ''}</td>
-                    <td style={{ padding: 10, minWidth: 0 }}>{it.meta.reimbursed ? 'Yes' : 'No'}</td>
-                    <td style={{ padding: 10, position: 'sticky', right: 0, background: 'var(--bg, white)', minWidth: 190, borderLeft: '1px solid #e5e7eb' }}>
-                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        <button style={btn('primary')} onClick={() => startWebEdit(it.id, it.meta)}>Edit</button>
-                        <button style={btn(it.meta.reimbursed ? 'neutral' : 'success')} disabled={!!updating[it.id]} onClick={async () => {
+                    <td style={{ padding: 8, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {it.row.pdfFileId ? (
+                        <a href="#" onClick={(e: any) => { e.preventDefault(); openPdfPreview(it.row.pdfFileId); }}>
+                          {it.meta.provider || ''}
+                        </a>
+                      ) : (
+                        it.meta.provider || ''
+                      )}
+                    </td>
+                    <td style={{ padding: 8, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{normalizeName(it.meta.patientName || '')}</td>
+                    <td style={{ padding: 8, minWidth: 0, whiteSpace: 'nowrap' }}>{formatAmount(it.meta.amount)} </td>
+                    <td style={{ padding: 8, minWidth: 0, whiteSpace: 'nowrap' }}>{it.meta.currency || ''}</td>
+                    <td style={{ padding: 8, minWidth: 0, whiteSpace: 'nowrap' }}>{it.meta.startDate || (it.meta as any).date || ''}</td>
+                    <td style={{ padding: 8, minWidth: 0, whiteSpace: 'nowrap' }}>{it.meta.endDate || ''}</td>
+                    <td style={{ padding: 8, minWidth: 0, whiteSpace: 'nowrap' }}>{it.meta.reimbursed ? 'Yes' : 'No'}</td>
+                    <td style={{ padding: 8, position: 'sticky', right: 0, background: 'var(--bg, white)', minWidth: 200, borderLeft: '1px solid #e5e7eb' }}>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                        <button style={webBtn('primary','sm')} onClick={() => startWebEdit(it.id, it.meta)}>Edit</button>
+                        <button style={webBtn(it.meta.reimbursed ? 'neutral' : 'success','sm')} disabled={!!updating[it.id]} onClick={async () => {
                           if (!accessToken) return;
                           setUpdating((u) => ({ ...u, [it.id]: true }));
                           try {
@@ -353,7 +442,7 @@ export default function DashboardScreen({ navigation }: Props) {
                             setUpdating((u) => ({ ...u, [it.id]: false }));
                           }
                         }}>{it.meta.reimbursed ? 'Unmark' : 'Mark'}</button>
-                        <button style={btn('danger')} disabled={!!updating[it.id]} onClick={async () => {
+                        <button style={webBtn('danger','sm')} disabled={!!updating[it.id]} onClick={async () => {
                           if (!accessToken) return;
                           if (!confirm('Delete this row from the ledger?')) return;
                           const alsoFiles = confirm('Also delete the associated files from Drive?');
@@ -388,36 +477,36 @@ export default function DashboardScreen({ navigation }: Props) {
                   </>
                 ) : (
                   <>
-                    <td style={{ padding: 10 }}>
-                      <input style={input()} value={drafts[it.id]?.provider || ''} onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], provider: e.target.value } }))} />
+                    <td style={{ padding: 8 }}>
+                      <input id={`edit-provider-${it.id}`} style={webInput()} value={drafts[it.id]?.provider || ''} onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], provider: e.target.value } }))} />
                     </td>
-                    <td style={{ padding: 10 }}>
-                      <input style={input()} value={drafts[it.id]?.patientName || ''} onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], patientName: e.target.value } }))} />
+                    <td style={{ padding: 8 }}>
+                      <input id={`edit-patient-${it.id}`} style={webInput()} value={drafts[it.id]?.patientName || ''} onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], patientName: normalizeName(e.target.value) } }))} />
                     </td>
-                    <td style={{ padding: 10 }}>
-                      <input style={input()} type="number" step="0.01" value={draftDollarValue(drafts[it.id]?.amount)} onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], amount: Number(e.target.value || '0') } }))} />
+                    <td style={{ padding: 8 }}>
+                      <input style={webInput()} inputMode="decimal" type="text" value={draftDollarValue(drafts[it.id]?.amount)} onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], amount: Number((e.target.value || '0').replace(/[^0-9.]/g, '')) } }))} />
                     </td>
-                    <td style={{ padding: 10 }}>
-                      <input style={input()} value={drafts[it.id]?.currency || ''} onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], currency: e.target.value } }))} />
+                    <td style={{ padding: 8 }}>
+                      <input style={webInput()} value={drafts[it.id]?.currency || ''} onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], currency: e.target.value } }))} />
                     </td>
-                    <td style={{ padding: 10 }}>
-                      <input style={input()} type="date" value={drafts[it.id]?.startDate || ''} onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], startDate: e.target.value } }))} />
+                    <td style={{ padding: 8 }}>
+                      <input style={webInput()} type="date" value={drafts[it.id]?.startDate || ''} onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], startDate: e.target.value } }))} />
                     </td>
-                    <td style={{ padding: 10 }}>
-                      <input style={input()} type="date" value={drafts[it.id]?.endDate || ''} onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], endDate: e.target.value } }))} />
+                    <td style={{ padding: 8 }}>
+                      <input style={webInput()} type="date" value={drafts[it.id]?.endDate || ''} onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], endDate: e.target.value } }))} />
                     </td>
-                    <td style={{ padding: 10 }}>{it.meta.reimbursed ? 'Yes' : 'No'}</td>
-                    <td style={{ padding: 10, position: 'sticky', right: 0, background: 'var(--bg, white)', minWidth: 190, borderLeft: '1px solid #e5e7eb' }}>
-                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        <button style={btn('primary')} disabled={!!updating[it.id]} onClick={async () => {
+                    <td style={{ padding: 8 }}>{it.meta.reimbursed ? 'Yes' : 'No'}</td>
+                    <td style={{ padding: 8, position: 'sticky', right: 0, background: 'var(--bg, white)', minWidth: 200, borderLeft: '1px solid #e5e7eb' }}>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                        <button style={webBtn('primary','sm')} disabled={!!updating[it.id]} onClick={async () => {
                           if (!accessToken) return;
                           setUpdating((u) => ({ ...u, [it.id]: true }));
                           try {
                             const draft = drafts[it.id] || {};
                             const newMeta: ReceiptMeta & Record<string, any> = {
                               ...it.meta,
-                              provider: draft.provider ?? it.meta.provider,
-                              patientName: draft.patientName ?? it.meta.patientName,
+                              provider: ((draft.provider ?? it.meta.provider) || ''),
+                              patientName: normalizeName(((draft.patientName ?? it.meta.patientName) || '')),
                               startDate: draft.startDate ?? (it.meta as any).startDate,
                               endDate: draft.endDate ?? (it.meta as any).endDate,
                               amount: draft.amount ?? (it.meta as any).amount,
@@ -456,7 +545,7 @@ export default function DashboardScreen({ navigation }: Props) {
                             setUpdating((u) => ({ ...u, [it.id]: false }));
                           }
                         }}>Save</button>
-                        <button style={btn('neutral')} onClick={() => setEditing((e) => ({ ...e, [it.id]: false }))}>Cancel</button>
+                        <button style={webBtn('neutral','sm')} onClick={() => setEditing((e) => ({ ...e, [it.id]: false }))}>Cancel</button>
                       </div>
                     </td>
                   </>
@@ -466,20 +555,41 @@ export default function DashboardScreen({ navigation }: Props) {
           </tbody>
         </table>
         </div>
+        {previewOpen && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, zIndex: 9999 }} onClick={() => setPreviewOpen(false)}>
+            <div style={{ width: '90%', height: '85%', background: 'white', borderRadius: 10, overflow: 'hidden', boxShadow: '0 10px 30px rgba(0,0,0,0.4)', position: 'relative', zIndex: 10000 }} onClick={(e: any) => e.stopPropagation()}>
+              <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 8 }}>
+                <button style={webBtn('neutral','sm')} onClick={() => { if (previewUrl) { try { URL.revokeObjectURL(previewUrl); } catch {} } setPreviewUrl(null); setPreviewOpen(false); }}>Close</button>
+              </div>
+              {previewLoading ? (
+                <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center' }}>
+                  <span>Loading preview…</span>
+                </div>
+              ) : previewUrl ? (
+                <iframe title="Receipt Preview" src={previewUrl} style={{ width: '100%', height: '100%', border: 'none' }} />
+              ) : (
+                <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center' }}>
+                  <span>Unable to load preview</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+        </div>
       ) : (
         // Native fallback: existing card list
-        <>
+        <View>
           {filtered.map((it) => (
             <View key={it.id} style={{ borderWidth: 1, borderRadius: 8, padding: 12, marginBottom: 8 }}>
               {!editing[it.id] ? (
                 <>
-                  <Text style={{ fontWeight: '600' }}>{it.meta.provider || '(Provider)'}</Text>
+                      <Text style={{ fontWeight: '600' }}>{it.meta.provider || '(Provider)'}</Text>
                   <Text style={{ color: '#666' }}>
                     Service: {it.meta.startDate || it.meta.date || '-'}
                     {it.meta.endDate ? ` → ${it.meta.endDate}` : ''}
                   </Text>
                   <View style={{ height: 6 }} />
-                  <Text>Who: {it.meta.patientName || '-'}</Text>
+              <Text>Who: {normalizeName(it.meta.patientName || '-')}</Text>
                   <Text>Amount: {formatAmount(it.meta.amount)} {it.meta.currency || ''}</Text>
                   <View style={{ height: 8 }} />
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -629,7 +739,7 @@ export default function DashboardScreen({ navigation }: Props) {
               )}
             </View>
           ))}
-        </>
+        </View>
       )}
       {items.length >= pageIndex ? (
         <View style={{ marginTop: 8 }}>
@@ -771,22 +881,8 @@ function renderSortTh(
   );
 }
 
-// Simple design tokens for web controls
-function btn(kind: 'primary' | 'success' | 'danger' | 'neutral') {
-  const base: any = {
-    padding: '6px 10px',
-    borderRadius: 8,
-    border: '1px solid #cbd5e1',
-    background: '#f8fafc',
-    color: '#0f172a',
-    cursor: 'pointer'
-  };
-  if (kind === 'primary') return { ...base, background: '#eef2ff', borderColor: '#c7d2fe' };
-  if (kind === 'success') return { ...base, background: '#ecfccb', borderColor: '#bef264' };
-  if (kind === 'danger') return { ...base, background: '#fee2e2', borderColor: '#fecaca' };
-  return base; // neutral
-}
-
-function input() {
-  return { padding: 8, border: '1px solid #e5e7eb', borderRadius: 8, width: '100%' } as any;
+// Helper: normalize names for consistent casing in the UI and saves
+function normalizeName(input: string): string {
+  const s = String(input || '').toLowerCase();
+  return s.replace(/\b([a-z])/g, (m, c) => c.toUpperCase()).trim();
 }

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, ScrollView, Text, TextInput, View, Platform, Image, Switch, Modal } from 'react-native';
+import { Alert, Button, ScrollView, Text, TextInput, View, Platform, Image, Switch, Modal, Pressable } from 'react-native';
 // Avoid static imports for native-only UI to prevent web bundling issues
 import { useNavigation } from '@react-navigation/native';
 // Removed separate ImagePicker button; using single DocumentPicker "Browse"
@@ -14,6 +14,7 @@ import { readUriToBytes, sha256Hex } from '../utils/bytes';
 import { imageDataUrlToPdfBytes } from '../utils/pdf';
 import { cleanupImage } from '../utils/imageCleanup';
 import { parseReceiptFields } from '../utils/receiptParse';
+import { btn as webBtn, input as webInput, chip as webChip, dropdown as webDropdown, menuItem as webMenuItem } from '../web/ui';
 
 type CaptureProps = { embedded?: boolean };
 export default function CaptureScreen({ embedded }: CaptureProps) {
@@ -37,6 +38,8 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
   const [lastUploadSig, setLastUploadSig] = useState<string | null>(null);
   const [zoomOpen, setZoomOpen] = useState<boolean>(false);
   const { accessToken, signIn } = useGoogleAuth();
+  const [showProvList, setShowProvList] = useState(false);
+  const [showPatList, setShowPatList] = useState(false);
   const [recentProviders, setRecentProviders] = useState<string[]>([]);
   const [recentPatients, setRecentPatients] = useState<string[]>([]);
   const serviceDate = useMemo(() => startDate || endDate || new Date().toISOString().slice(0, 10), [startDate, endDate]);
@@ -94,6 +97,11 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
     setLastUploadSig(null);
   }
 
+  function normalizeName(input: string): string {
+    const s = String(input || '').toLowerCase();
+    return s.replace(/\b([a-z])/g, (m, c) => c.toUpperCase()).trim();
+  }
+
   const browse = async () => {
     const res = await DocumentPicker.getDocumentAsync({ type: ['image/*', 'application/pdf'] as any, multiple: false, copyToCacheDirectory: true });
     if (res.canceled) return;
@@ -118,8 +126,8 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
         const parsed = parseReceiptFields(ocr.text || '');
         if (parsed.startDate) setStartDate(parsed.startDate);
         if (parsed.endDate) setEndDate(parsed.endDate);
-        if (parsed.merchant) setProvider(parsed.merchant);
-        if (parsed.patientName) setPatientName(parsed.patientName);
+        if (parsed.merchant) setProvider(String(parsed.merchant));
+        if (parsed.patientName) setPatientName(normalizeName(parsed.patientName));
         if (parsed.amountCents) setAmount(centsToDollars(parsed.amountCents));
         if (parsed.currency) setCurrency(parsed.currency);
         if (typeof parsed.reimbursed === 'boolean') setReimbursed(parsed.reimbursed);
@@ -146,8 +154,8 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
     const parsed = parseReceiptFields(ocr.text || '');
     if (parsed.startDate) setStartDate(parsed.startDate);
     if (parsed.endDate) setEndDate(parsed.endDate);
-    if (parsed.merchant) setProvider(parsed.merchant);
-    if (parsed.patientName) setPatientName(parsed.patientName);
+    if (parsed.merchant) setProvider(String(parsed.merchant));
+    if (parsed.patientName) setPatientName(normalizeName(parsed.patientName));
     if (parsed.amountCents) setAmount(centsToDollars(parsed.amountCents));
     if (parsed.currency) setCurrency(parsed.currency);
     if (typeof parsed.reimbursed === 'boolean') setReimbursed(parsed.reimbursed);
@@ -171,17 +179,16 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
       const receipt = {
         id: crypto.randomUUID(),
         date: serviceDate,
-        merchant: provider,
+        merchant: normalizeName(provider),
         amount: dollarsToCents(amount || '0'),
         currency,
       } as any;
       const baseName = buildFileName(receipt);
 
-      // Idempotency guard: prevent re-uploading the same receipt+file combo
+      // Idempotency guard: prevent re-uploading the same receipt+file combo (allow override)
       if (lastUploadSig && lastUploadSig === currentSig) {
-        setStatus('Already uploaded — change details or Browse another file');
-        Alert.alert('Already uploaded', 'This receipt appears to be already uploaded. Modify details or browse a different file.');
-        return;
+        const proceed = await confirmAsync('This appears to be the same receipt. Upload another row anyway?');
+        if (!proceed) { setStatus('Already uploaded — canceled'); return; }
       }
       const path = buildDrivePath(receipt);
 
@@ -210,18 +217,21 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
         const pdfBytes = await readUriToBytes(fileUri);
         const checksum = await sha256Hex(pdfBytes);
         const existing = await withAuthRetry((t) => listAllReceipts(t, spreadsheetId));
-        if (existing.some((r) => r.checksum === checksum)) {
-          setStatus('Already uploaded — matched checksum in registry');
-          Alert.alert('Duplicate detected', 'A receipt with the same checksum already exists in the registry.');
-          return;
+        const match = existing.find((r) => r.checksum === checksum);
+        let pdfId: string;
+        if (match) {
+          const proceed = await confirmAsync('Duplicate detected. Append another row and reuse the existing PDF?');
+          if (!proceed) { setStatus('Duplicate detected — canceled'); return; }
+          pdfId = match.pdfFileId || '';
+        } else {
+          const pdfName = `${baseName}.pdf`;
+          pdfId = await withAuthRetry((t) =>
+            uploadEncryptedBlob({ folderId, name: pdfName, bytes: pdfBytes, token: t, originalExt: 'pdf', contentType: 'application/pdf' })
+          );
         }
-        const pdfName = `${baseName}.pdf`;
-        const pdfId = await withAuthRetry((t) =>
-          uploadEncryptedBlob({ folderId, name: pdfName, bytes: pdfBytes, token: t, originalExt: 'pdf', contentType: 'application/pdf' })
-        );
         await withAuthRetry((t) => appendReceiptRow(t, spreadsheetId, {
-          provider,
-          patientName,
+          provider: normalizeName(provider),
+          patientName: normalizeName(patientName),
           amount: Number((amount || '0').replace(/[^0-9.]/g, '')) || 0,
           currency,
           startDate: startDate || undefined,
@@ -276,17 +286,21 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
       if (pdfBytes) {
         const checksum = await sha256Hex(pdfBytes);
         const existing = await withAuthRetry((t) => listAllReceipts(t, spreadsheetId));
-        if (existing.some((r) => r.checksum === checksum)) {
-          setStatus('Already uploaded — matched checksum in registry');
-          Alert.alert('Duplicate detected', 'A receipt with the same checksum already exists in the registry.');
-          return;
+        const match = existing.find((r) => r.checksum === checksum);
+        let cleanPdfId: string;
+        if (match) {
+          const proceed = await confirmAsync('Duplicate detected. Append another row and reuse the existing PDF?');
+          if (!proceed) { setStatus('Duplicate detected — canceled'); return; }
+          cleanPdfId = match.pdfFileId || '';
+          uploads.push(`Reused PDF: ${cleanPdfId || '(unknown)'}`);
+        } else {
+          const pdfName = `${baseName}.pdf`;
+          cleanPdfId = await withAuthRetry((t) => uploadEncryptedBlob({ folderId, name: pdfName, bytes: pdfBytes!, token: t, originalExt: 'pdf', contentType: 'application/pdf' }));
+          uploads.push(`PDF: ${cleanPdfId}`);
         }
-        const pdfName = `${baseName}.pdf`;
-        const cleanPdfId = await withAuthRetry((t) => uploadEncryptedBlob({ folderId, name: pdfName, bytes: pdfBytes!, token: t, originalExt: 'pdf', contentType: 'application/pdf' }));
-        uploads.push(`PDF: ${cleanPdfId}`);
         await withAuthRetry((t) => appendReceiptRow(t, spreadsheetId, {
-          provider,
-          patientName,
+          provider: normalizeName(provider),
+          patientName: normalizeName(patientName),
           amount: Number((amount || '0').replace(/[^0-9.]/g, '')) || 0,
           currency,
           startDate: startDate || undefined,
@@ -311,35 +325,43 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
     }
   };
 
+  async function confirmAsync(message: string): Promise<boolean> {
+    if (Platform.OS === 'web') {
+      // @ts-ignore
+      return Promise.resolve(window.confirm(message));
+    }
+    return await new Promise<boolean>((resolve) => {
+      Alert.alert('Confirm', message, [
+        { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+        { text: 'OK', onPress: () => resolve(true) },
+      ]);
+    });
+  }
+
   return (
     <ScrollView contentContainerStyle={{ padding: 16 }}>
-      <Modal visible={zoomOpen} animationType="fade" onRequestClose={() => setZoomOpen(false)}>
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <Modal visible={zoomOpen} animationType="fade" onRequestClose={() => setZoomOpen(false)} transparent>
+        <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', alignItems: 'center', justifyContent: 'center', padding: 16 }} onPress={() => setZoomOpen(false)}>
           <Image source={{ uri: previewUri || cleanUri || fileUri || undefined }} resizeMode="contain" style={{ width: '100%', height: '85%' as any }} />
-          <View style={{ height: 12 }} />
-          <Button title="Close" onPress={() => setZoomOpen(false)} />
-        </View>
+        </Pressable>
       </Modal>
-      <Button title="Browse" onPress={browse} />
+      {Platform.OS === 'web' ? (
+        // @ts-ignore
+        <button style={webBtn('primary')} onClick={browse}>Browse</button>
+      ) : (
+        <Button title="Browse" onPress={browse} />
+      )}
       {(previewUri || cleanUri) && (
         <>
           <View style={{ height: 12 }} />
           <Text style={{ fontWeight: '600' }}>File preview</Text>
-          <Image source={{ uri: previewUri || cleanUri! }} resizeMode="contain" style={{ width: '100%', height: 240, backgroundColor: '#fafafa', borderRadius: 8 }} />
-          <View style={{ height: 8 }} />
-          <View style={{ flexDirection: 'row', gap: 8 }}>
-            <Button title="Zoom" onPress={() => setZoomOpen(true)} />
-            <Button title="Replace file" onPress={browse} />
-          </View>
+          <Pressable onPress={() => setZoomOpen(true)}>
+            <Image source={{ uri: previewUri || cleanUri! }} resizeMode="contain" style={{ width: '100%', height: 240, backgroundColor: '#fafafa', borderRadius: 8 }} />
+          </Pressable>
         </>
       )}
       <View style={{ height: 12 }} />
-      {!accessToken && (
-        <>
-          <Button title="Sign in with Google" onPress={signIn as any} />
-          <View style={{ height: 12 }} />
-        </>
-      )}
+      {/* Removed explicit Sign in button; upload flow prompts when needed */}
       <Text>Start Date</Text>
       <DateField value={startDate} onChange={setStartDate} />
       <View style={{ height: 8 }} />
@@ -357,19 +379,43 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
       <View style={{ height: 8 }} />
       <Text>Provider</Text>
       {Platform.OS === 'web' ? (
-        // @ts-ignore web datalist
-        <>
-          <input list="providersList" value={provider} onChange={(e: any) => setProvider(e.target.value)} placeholder="e.g., Mercury Dental" style={{ border: '1px solid #e5e7eb', padding: 10, borderRadius: 8, width: '100%' }} />
-          <datalist id="providersList">
-            {recentProviders.map((p, i) => (<option key={p + i} value={p} />))}
-          </datalist>
-        </>
+        // @ts-ignore web hybrid: custom dropdown under input
+        <div style={{ position: 'relative' }}>
+          <input
+            value={provider}
+            onChange={(e: any) => { setProvider(e.target.value); setShowProvList(true); }}
+            onFocus={() => setShowProvList(true)}
+            onBlur={() => setTimeout(() => setShowProvList(false), 120)}
+            placeholder="Start typing provider…"
+            style={webInput()}
+          />
+          {showProvList ? (
+            // @ts-ignore
+            <div style={webDropdown()}>
+              {recentProviders
+                .filter(p => p.toLowerCase().includes((provider||'').toLowerCase()))
+                .slice(0, 8)
+                .map((p) => (
+                  // @ts-ignore
+                  <button
+                    key={p}
+                    style={{ ...webMenuItem() }}
+                    onMouseDown={(e: any) => e.preventDefault()}
+                    onClick={() => { setProvider(p); setShowProvList(false); }}
+                  >
+                    {p}
+                  </button>
+                ))}
+            </div>
+          ) : null}
+        </div>
       ) : (
+        // Native hybrid: text input with suggestion dropdown
         <>
-          <TextInput value={provider} onChangeText={setProvider} placeholder="Provider" style={{ borderWidth: 1, padding: 8, borderRadius: 6 }} />
-          {recentProviders.length ? (
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
-              {recentProviders.slice(0, 6).map((p) => (
+          <TextInput value={provider} onChangeText={setProvider} placeholder="Start typing provider…" style={{ borderWidth: 1, padding: 8, borderRadius: 6 }} />
+          {provider?.length ? (
+            <View style={{ borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 6, marginTop: 4 }}>
+              {recentProviders.filter(p => p.toLowerCase().includes((provider||'').toLowerCase())).slice(0,6).map((p) => (
                 <Button key={p} title={p} onPress={() => setProvider(p)} />
               ))}
             </View>
@@ -379,20 +425,44 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
       <View style={{ height: 8 }} />
       <Text>Patient Name</Text>
       {Platform.OS === 'web' ? (
-        // @ts-ignore web datalist
-        <>
-          <input list="patientsList" value={patientName} onChange={(e: any) => setPatientName(e.target.value)} placeholder="e.g., John Smith" style={{ border: '1px solid #e5e7eb', padding: 10, borderRadius: 8, width: '100%' }} />
-          <datalist id="patientsList">
-            {recentPatients.map((p, i) => (<option key={p + i} value={p} />))}
-          </datalist>
-        </>
+        // @ts-ignore web hybrid: custom dropdown under input
+        <div style={{ position: 'relative' }}>
+          <input
+            value={patientName}
+            onChange={(e: any) => { setPatientName(normalizeName(e.target.value)); setShowPatList(true); }}
+            onFocus={() => setShowPatList(true)}
+            onBlur={() => setTimeout(() => setShowPatList(false), 120)}
+            placeholder="Start typing patient name…"
+            style={webInput()}
+          />
+          {showPatList ? (
+            // @ts-ignore
+            <div style={webDropdown()}>
+              {recentPatients
+                .filter(p => p.toLowerCase().includes((patientName||'').toLowerCase()))
+                .slice(0, 8)
+                .map((p) => (
+                  // @ts-ignore
+                  <button
+                    key={p}
+                    style={{ ...webMenuItem() }}
+                    onMouseDown={(e: any) => e.preventDefault()}
+                    onClick={() => { setPatientName(normalizeName(p)); setShowPatList(false); }}
+                  >
+                    {p}
+                  </button>
+                ))}
+            </div>
+          ) : null}
+        </div>
       ) : (
+        // Native hybrid: text input with suggestion dropdown
         <>
-          <TextInput value={patientName} onChangeText={setPatientName} placeholder="Patient Name" style={{ borderWidth: 1, padding: 8, borderRadius: 6 }} />
-          {recentPatients.length ? (
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
-              {recentPatients.slice(0, 6).map((p) => (
-                <Button key={p} title={p} onPress={() => setPatientName(p)} />
+          <TextInput value={patientName} onChangeText={(v) => setPatientName(normalizeName(v))} placeholder="Start typing patient name…" style={{ borderWidth: 1, padding: 8, borderRadius: 6 }} />
+          {patientName?.length ? (
+            <View style={{ borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 6, marginTop: 4 }}>
+              {recentPatients.filter(p => p.toLowerCase().includes((patientName||'').toLowerCase())).slice(0,6).map((p) => (
+                <Button key={p} title={p} onPress={() => setPatientName(normalizeName(p))} />
               ))}
             </View>
           ) : null}
@@ -447,11 +517,23 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
         <Text>Store original image</Text>
       </View>
       <View style={{ height: 12 }} />
-      <Button title={uploading ? 'Uploading…' : isDuplicate ? 'Already uploaded' : 'Upload to Drive'} onPress={upload} disabled={uploading || isDuplicate} />
+      {Platform.OS === 'web' ? (
+        // @ts-ignore
+        <button style={webBtn('primary')} disabled={uploading || isDuplicate} onClick={upload}>
+          {uploading ? 'Uploading…' : isDuplicate ? 'Already uploaded' : 'Upload to Drive'}
+        </button>
+      ) : (
+        <Button title={uploading ? 'Uploading…' : isDuplicate ? 'Already uploaded' : 'Upload to Drive'} onPress={upload} disabled={uploading || isDuplicate} />
+      )}
       {!embedded && (
         <>
           <View style={{ height: 8 }} />
-          <Button title="Go to Dashboard" onPress={() => navigation.navigate('Dashboard')} />
+          {Platform.OS === 'web' ? (
+            // @ts-ignore
+            <button style={webBtn('neutral')} onClick={() => navigation.navigate('Dashboard')}>Go to Dashboard</button>
+          ) : (
+            <Button title="Go to Dashboard" onPress={() => navigation.navigate('Dashboard')} />
+          )}
         </>
       )}
       <Text style={{ color: '#666', marginTop: 6 }}>{status || (accessToken ? 'Signed in' : 'Not signed in — will prompt on upload')}</Text>
