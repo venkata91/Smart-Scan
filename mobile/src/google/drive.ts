@@ -119,3 +119,15 @@ export async function updateFileText(params: {
     throw new Error(`Drive update failed: ${res.status} ${msg}`);
   }
 }
+
+export async function deleteFile(fileId: string, token: string): Promise<void> {
+  if (!fileId) return;
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok && res.status !== 404) {
+    const msg = await res.text();
+    throw new Error(`Drive delete failed: ${res.status} ${msg}`);
+  }
+}

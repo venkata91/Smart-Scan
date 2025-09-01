@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, ScrollView, Text, TextInput, View, Platform, Image, Switch, Modal } from 'react-native';
 // Avoid static imports for native-only UI to prevent web bundling issues
 import { useNavigation } from '@react-navigation/native';
@@ -29,6 +29,7 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
   const [currency, setCurrency] = useState<string>('USD');
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
+  const [hasEndDate, setHasEndDate] = useState<boolean>(false);
   const [reimbursed, setReimbursed] = useState<boolean>(false);
   const [storeOriginal, setStoreOriginal] = useState<boolean>(false);
   const [status, setStatus] = useState<string>('');
@@ -36,12 +37,62 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
   const [lastUploadSig, setLastUploadSig] = useState<string | null>(null);
   const [zoomOpen, setZoomOpen] = useState<boolean>(false);
   const { accessToken, signIn } = useGoogleAuth();
+  const [recentProviders, setRecentProviders] = useState<string[]>([]);
+  const [recentPatients, setRecentPatients] = useState<string[]>([]);
   const serviceDate = useMemo(() => startDate || endDate || new Date().toISOString().slice(0, 10), [startDate, endDate]);
   const currentSig = useMemo(() => {
     const base = buildFileName({ id: '', date: serviceDate, merchant: provider, amount: dollarsToCents(amount || '0'), currency } as any);
     return JSON.stringify({ baseName: base, fileUri, hasClean: !!cleanUri, amount, currency, provider, patientName, startDate, endDate });
   }, [serviceDate, provider, amount, currency, patientName, startDate, endDate, fileUri, cleanUri]);
   const isDuplicate = !!lastUploadSig && lastUploadSig === currentSig;
+
+  useEffect(() => {
+    // Load recent providers/patients from Sheets once signed in
+    let cancelled = false;
+    (async () => {
+      if (!accessToken) return;
+      try {
+        let token = accessToken;
+        const withAuthRetry = async <T,>(fn: (t: string) => Promise<T>): Promise<T> => {
+          try { return await fn(token); } catch (e: any) {
+            const msg = String(e?.message || e || '');
+            if (msg.includes('401') || msg.includes('UNAUTHENTICATED') || msg.includes('Invalid Credentials')) {
+              const t2 = await signIn(); if (!t2) throw e; token = t2; return await fn(token);
+            }
+            throw e;
+          }
+        };
+        const spreadsheetId = await withAuthRetry((t) => findOrCreateSpreadsheet(t));
+        const all = await withAuthRetry((t) => listAllReceipts(t, spreadsheetId));
+        if (cancelled) return;
+        const providers = Array.from(new Set(all.map(r => (r.provider || '').trim()).filter(Boolean))).slice(-20).reverse();
+        const patients = Array.from(new Set(all.map(r => (r.patientName || '').trim()).filter(Boolean))).slice(-20).reverse();
+        setRecentProviders(providers);
+        setRecentPatients(patients);
+      } catch (e) {
+        // ignore history errors
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [accessToken]);
+
+  function resetForm() {
+    setFileUri(null);
+    setFileExt(null);
+    setCleanUri(null);
+    setPreviewUri(null);
+    setProvider('');
+    setPatientName('');
+    setAmount('');
+    setCurrency('USD');
+    setStartDate('');
+    setEndDate('');
+    setHasEndDate(false);
+    setReimbursed(false);
+    setStoreOriginal(false);
+    setStatus('');
+    setLastUploadSig(null);
+  }
 
   const browse = async () => {
     const res = await DocumentPicker.getDocumentAsync({ type: ['image/*', 'application/pdf'] as any, multiple: false, copyToCacheDirectory: true });
@@ -171,10 +222,10 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
         await withAuthRetry((t) => appendReceiptRow(t, spreadsheetId, {
           provider,
           patientName,
-          amountCents: dollarsToCents(amount || '0'),
+          amount: Number((amount || '0').replace(/[^0-9.]/g, '')) || 0,
           currency,
           startDate: startDate || undefined,
-          endDate: endDate || undefined,
+          endDate: hasEndDate && endDate ? endDate : undefined,
           reimbursed,
           pdfFileId: pdfId,
           originalFileId: '',
@@ -184,6 +235,7 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
         setStatus('Upload complete');
         setLastUploadSig(currentSig);
         Alert.alert('Uploaded', `PDF uploaded. File ID: ${pdfId}`);
+        resetForm();
         return;
       }
 
@@ -235,10 +287,10 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
         await withAuthRetry((t) => appendReceiptRow(t, spreadsheetId, {
           provider,
           patientName,
-          amountCents: dollarsToCents(amount || '0'),
+          amount: Number((amount || '0').replace(/[^0-9.]/g, '')) || 0,
           currency,
           startDate: startDate || undefined,
-          endDate: endDate || undefined,
+          endDate: hasEndDate && endDate ? endDate : undefined,
           reimbursed,
           pdfFileId: cleanPdfId,
           originalFileId: originalId || '',
@@ -249,6 +301,7 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
       setStatus('Upload complete');
       setLastUploadSig(currentSig);
       Alert.alert('Uploaded', uploads.join('\n'));
+      resetForm();
     } catch (e: any) {
       console.error('Upload failed', e);
       setStatus('Upload failed');
@@ -290,14 +343,61 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
       <Text>Start Date</Text>
       <DateField value={startDate} onChange={setStartDate} />
       <View style={{ height: 8 }} />
-      <Text>End Date (optional)</Text>
-      <DateField value={endDate} onChange={setEndDate} />
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        <Switch value={hasEndDate} onValueChange={(v) => { setHasEndDate(v); if (!v) setEndDate(''); }} />
+        <Text>Add End Date</Text>
+      </View>
+      {hasEndDate ? (
+        <>
+          <View style={{ height: 8 }} />
+          <Text>End Date</Text>
+          <DateField value={endDate} onChange={setEndDate} />
+        </>
+      ) : null}
       <View style={{ height: 8 }} />
       <Text>Provider</Text>
-      <TextInput value={provider} onChangeText={setProvider} style={{ borderWidth: 1, padding: 8, borderRadius: 6 }} />
+      {Platform.OS === 'web' ? (
+        // @ts-ignore web datalist
+        <>
+          <input list="providersList" value={provider} onChange={(e: any) => setProvider(e.target.value)} placeholder="e.g., Mercury Dental" style={{ border: '1px solid #e5e7eb', padding: 10, borderRadius: 8, width: '100%' }} />
+          <datalist id="providersList">
+            {recentProviders.map((p, i) => (<option key={p + i} value={p} />))}
+          </datalist>
+        </>
+      ) : (
+        <>
+          <TextInput value={provider} onChangeText={setProvider} placeholder="Provider" style={{ borderWidth: 1, padding: 8, borderRadius: 6 }} />
+          {recentProviders.length ? (
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+              {recentProviders.slice(0, 6).map((p) => (
+                <Button key={p} title={p} onPress={() => setProvider(p)} />
+              ))}
+            </View>
+          ) : null}
+        </>
+      )}
       <View style={{ height: 8 }} />
       <Text>Patient Name</Text>
-      <TextInput value={patientName} onChangeText={setPatientName} style={{ borderWidth: 1, padding: 8, borderRadius: 6 }} />
+      {Platform.OS === 'web' ? (
+        // @ts-ignore web datalist
+        <>
+          <input list="patientsList" value={patientName} onChange={(e: any) => setPatientName(e.target.value)} placeholder="e.g., John Smith" style={{ border: '1px solid #e5e7eb', padding: 10, borderRadius: 8, width: '100%' }} />
+          <datalist id="patientsList">
+            {recentPatients.map((p, i) => (<option key={p + i} value={p} />))}
+          </datalist>
+        </>
+      ) : (
+        <>
+          <TextInput value={patientName} onChangeText={setPatientName} placeholder="Patient Name" style={{ borderWidth: 1, padding: 8, borderRadius: 6 }} />
+          {recentPatients.length ? (
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+              {recentPatients.slice(0, 6).map((p) => (
+                <Button key={p} title={p} onPress={() => setPatientName(p)} />
+              ))}
+            </View>
+          ) : null}
+        </>
+      )}
       <View style={{ height: 8 }} />
       <Text>Amount (e.g., 12.34)</Text>
       <TextInput value={amount} keyboardType="decimal-pad" onChangeText={setAmount} style={{ borderWidth: 1, padding: 8, borderRadius: 6 }} />

@@ -24,12 +24,12 @@ export default function HomeScreen() {
           )}
         </View>
       </View>
-      <View style={{ flexDirection: isWide ? 'row' : 'column', gap: 16, marginTop: 16 }}>
-        <View style={{ flex: 1, borderWidth: 1, borderRadius: 8, padding: 12 }}>
-          <Text style={{ fontSize: 16, fontWeight: '600', marginBottom: 8 }}>Scan Receipt</Text>
+      <View style={{ flexDirection: isWide ? 'row' : 'column', gap: 16, marginTop: 16, alignItems: 'stretch' }}>
+        <View style={isWide ? { width: '30%', borderWidth: 1, borderRadius: 10, padding: 12 } : { borderWidth: 1, borderRadius: 10, padding: 12 }}>
+          <Text style={{ fontSize: 16, fontWeight: '600', marginBottom: 8 }}>Scan</Text>
           <CaptureScreen embedded />
         </View>
-        <View style={{ flex: 1, borderWidth: 1, borderRadius: 8, padding: 12 }}>
+        <View style={isWide ? { width: '70%', borderWidth: 1, borderRadius: 10, padding: 12 } : { borderWidth: 1, borderRadius: 10, padding: 12 }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
             <Text style={{ fontSize: 16, fontWeight: '600' }}>Dashboard</Text>
             <Button title={showDashboard ? 'Hide' : 'Load Dashboard'} onPress={() => setShowDashboard((v) => !v)} />
