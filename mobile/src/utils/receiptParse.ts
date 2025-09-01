@@ -3,6 +3,10 @@ export type ParsedReceipt = {
   merchant?: string;
   amountCents?: string; // string to keep TextInput happy
   currency?: string; // e.g., USD
+  patientName?: string;
+  startDate?: string; // YYYY-MM-DD
+  endDate?: string;   // YYYY-MM-DD
+  reimbursed?: boolean;
 };
 
 export function parseReceiptFields(text: string): ParsedReceipt {
@@ -25,33 +29,30 @@ export function parseReceiptFields(text: string): ParsedReceipt {
     /(\d{1,2})[-\/.](\d{1,2})[-\/.](20\d{2})/, // MM-DD-YYYY or DD-MM-YYYY
     /(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2})/, // M-D-YY
   ];
-  const dateMatch = dateRegexes
-    .map((re) => re.exec(text))
-    .find((m) => m);
-  if (dateMatch) {
-    if (dateMatch[1].length === 4) {
-      // YYYY, M, D
-      const yyyy = parseInt(dateMatch[1], 10);
-      const mm = parseInt(dateMatch[2], 10);
-      const dd = parseInt(dateMatch[3], 10);
-      result.date = `${yyyy}-${pad2(mm)}-${pad2(dd)}`;
-    } else if (dateMatch[3].length === 4) {
-      // M,D,YYYY or D,M,YYYY — assume first is month if <=12
-      const a = parseInt(dateMatch[1], 10);
-      const b = parseInt(dateMatch[2], 10);
-      const yyyy = parseInt(dateMatch[3], 10);
-      const mm = a <= 12 ? a : b;
-      const dd = a <= 12 ? b : a;
-      result.date = `${yyyy}-${pad2(mm)}-${pad2(dd)}`;
-    } else {
-      // M,D,YY -> assume 20YY
-      const a = parseInt(dateMatch[1], 10);
-      const b = parseInt(dateMatch[2], 10);
-      const yy = parseInt(dateMatch[3], 10);
-      const yyyy = 2000 + yy;
-      const mm = a <= 12 ? a : b;
-      const dd = a <= 12 ? b : a;
-      result.date = `${yyyy}-${pad2(mm)}-${pad2(dd)}`;
+  const allDates: string[] = [];
+  for (const re of dateRegexes) {
+    let m: RegExpExecArray | null;
+    const clone = new RegExp(re.source, 'g');
+    while ((m = clone.exec(text)) !== null) {
+      let y: number, mo: number, d: number;
+      if (m[1].length === 4) {
+        y = parseInt(m[1], 10); mo = parseInt(m[2], 10); d = parseInt(m[3], 10);
+      } else if (m[3].length === 4) {
+        const a = parseInt(m[1], 10); const b = parseInt(m[2], 10);
+        y = parseInt(m[3], 10); mo = a <= 12 ? a : b; d = a <= 12 ? b : a;
+      } else {
+        const a = parseInt(m[1], 10); const b = parseInt(m[2], 10); const yy = parseInt(m[3], 10);
+        y = 2000 + yy; mo = a <= 12 ? a : b; d = a <= 12 ? b : a;
+      }
+      allDates.push(`${y}-${pad2(mo)}-${pad2(d)}`);
+    }
+  }
+  if (allDates.length) {
+    const sorted = Array.from(new Set(allDates)).sort();
+    result.date = sorted[0];
+    if (sorted.length >= 2) {
+      result.startDate = sorted[0];
+      result.endDate = sorted[sorted.length - 1];
     }
   }
 
@@ -80,11 +81,31 @@ export function parseReceiptFields(text: string): ParsedReceipt {
   }
   if (chosen != null) result.amountCents = String(chosen);
 
-  // Merchant heuristic: first line that looks like a name (letters/spaces), avoid lines with $ or digits-heavy
-  const nameLine = lines.find(
-    (l) => /[A-Za-z]/.test(l) && !/\$/.test(l) && l.length >= 3 && l.split(' ').some((w) => /[A-Za-z]{2,}/.test(w))
-  );
-  if (nameLine) result.merchant = normalizeName(nameLine);
+  // Provider (merchant) heuristic:
+  // 1) Look for explicit labels like Provider/Doctor/Clinic/Hospital/Pharmacy
+  let provider: string | undefined;
+  const labelRe = /(provider|doctor|physician|clinic|hospital|dental|dentist|pharmacy|optometrist|therap(?:y|ist)|urgent care)\s*[:\-]\s*(.+)/i;
+  for (const l of lines.slice(0, 15)) {
+    const m = l.match(labelRe);
+    if (m && m[2]) { provider = m[2].trim(); break; }
+  }
+  // 2) Otherwise take the first uppercase-heavy line without currency/amounts
+  if (!provider) {
+    provider = lines.find((l) => /[A-Za-z]/.test(l) && !/[\$€£]/.test(l) && !/\d{3,}/.test(l) && isLikelyName(l));
+  }
+  if (provider) result.merchant = normalizeName(provider);
+
+  // Patient name: look for explicit labels
+  const patientLine = lines.find((l) => /(patient|member|dependent|name)\s*[:\-]/i.test(l));
+  if (patientLine) {
+    const m = patientLine.match(/(patient|member|dependent|name)\s*[:\-]\s*(.+)/i);
+    if (m && m[2]) result.patientName = m[2].trim();
+  }
+
+  // Reimbursed status: detect phrases indicating fully paid
+  if (/reimbursed|paid in full|payment received/i.test(text)) {
+    result.reimbursed = true;
+  }
 
   return result;
 }
@@ -96,7 +117,15 @@ function pad2(n: number) {
 function normalizeName(s: string) {
   // Remove obvious receipt words
   return s
-    .replace(/receipt|invoice|total|amount|date|merchant|thank you/gi, '')
+    .replace(/receipt|invoice|total|amount|date|merchant|thank you|statement|account|no\.?|number|qty|balance/gi, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
+}
+
+function isLikelyName(line: string) {
+  const words = line.split(/\s+/).filter(Boolean);
+  if (!words.length) return false;
+  const letters = line.replace(/[^A-Za-z]/g, '').length;
+  const ratio = letters / Math.max(1, line.length);
+  return ratio > 0.5 && words.some((w) => /[A-Za-z]{3,}/.test(w));
 }

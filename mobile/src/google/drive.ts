@@ -72,3 +72,54 @@ export async function uploadEncryptedBlob(params: {
   const data = await res.json();
   return data.id as string;
 }
+
+// List uploaded receipt metadata sidecar files (plain JSON)
+export async function listReceiptMetaFiles(token: string): Promise<Array<{ id: string; name: string }>> {
+  const out: Array<{ id: string; name: string }> = [];
+  let pageToken: string | undefined = undefined;
+  do {
+    const url = new URL('https://www.googleapis.com/drive/v3/files');
+    url.searchParams.set('q', "name contains '.meta.json' and trashed=false");
+    url.searchParams.set('fields', 'nextPageToken, files(id,name)');
+    url.searchParams.set('pageSize', '100');
+    if (pageToken) url.searchParams.set('pageToken', pageToken);
+    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new Error(`Drive list failed: ${res.status}`);
+    const data = await res.json();
+    for (const f of data.files || []) out.push({ id: f.id, name: f.name });
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+  return out;
+}
+
+export async function getFileText(fileId: string, token: string): Promise<string> {
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Drive read failed: ${res.status}`);
+  return await res.text();
+}
+
+// Update (replace) the file content with provided text
+export async function updateFileText(params: {
+  fileId: string;
+  token: string;
+  text: string;
+  contentType?: string; // default application/json
+}): Promise<void> {
+  const res = await fetch(
+    `https://www.googleapis.com/upload/drive/v3/files/${params.fileId}?uploadType=media`,
+    {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${params.token}`,
+        'Content-Type': params.contentType || 'application/json',
+      },
+      body: params.text as any,
+    }
+  );
+  if (!res.ok) {
+    const msg = await res.text();
+    throw new Error(`Drive update failed: ${res.status} ${msg}`);
+  }
+}

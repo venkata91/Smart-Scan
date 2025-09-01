@@ -3,13 +3,13 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Button, SafeAreaView, Text, View } from 'react-native';
 import CaptureScreen from './src/screens/CaptureScreen';
-import ReceiptsScreen from './src/screens/ReceiptsScreen';
-import SettingsScreen from './src/screens/SettingsScreen';
+import SignInScreen from './src/screens/SignInScreen';
+import DashboardScreen from './src/screens/DashboardScreen';
 
 export type RootStackParamList = {
-  Capture: undefined;
-  Receipts: undefined;
-  Settings: undefined;
+  SignIn: undefined;
+  Scan: undefined;
+  Dashboard: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -17,12 +17,11 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 export default function App() {
   return (
     <NavigationContainer>
-      <Stack.Navigator>
-        <Stack.Screen name="Capture" component={CaptureScreen} />
-        <Stack.Screen name="Receipts" component={ReceiptsScreen} />
-        <Stack.Screen name="Settings" component={SettingsScreen} />
+      <Stack.Navigator initialRouteName="SignIn">
+        <Stack.Screen name="SignIn" component={SignInScreen} options={{ title: 'Sign In' }} />
+        <Stack.Screen name="Scan" component={CaptureScreen} options={{ title: 'Scan Receipts' }} />
+        <Stack.Screen name="Dashboard" component={DashboardScreen} options={{ title: 'Dashboard' }} />
       </Stack.Navigator>
     </NavigationContainer>
   );
 }
-
