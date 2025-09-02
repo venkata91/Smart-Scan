@@ -3,3 +3,4 @@ node_modules/
 .expo/
 *.log
 .DS_Store
+mobile/.env

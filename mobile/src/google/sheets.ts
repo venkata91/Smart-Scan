@@ -9,6 +9,7 @@ const HEADERS = [
   'patientName',
   'amount',
   'currency',
+  'expenseType',
   'startDate',
   'endDate',
   'reimbursed',
@@ -24,6 +25,7 @@ export type ReceiptRow = {
   patientName?: string;
   amount?: number;
   currency?: string;
+  expenseType?: string;
   startDate?: string;
   endDate?: string;
   reimbursed?: boolean;
@@ -86,9 +88,9 @@ export async function ensureHeaders(token: string, spreadsheetId: string): Promi
   const row = json.values?.[0] || [];
   const same = Array.isArray(row) && row.length === HEADERS.length && row.every((v: string, i: number) => v === HEADERS[i]);
   if (same) return;
-  // Put headers
-  const put = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(TAB_NAME)}!A1:append?valueInputOption=RAW`, {
-    method: 'POST',
+  // Put headers (overwrite first row)
+  const put = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(TAB_NAME)}!A1:Z1?valueInputOption=RAW`, {
+    method: 'PUT',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ values: [HEADERS] }),
   });
@@ -105,6 +107,7 @@ export async function appendReceiptRow(token: string, spreadsheetId: string, row
     row.patientName ?? '',
     row.amount ?? '',
     row.currency ?? '',
+    row.expenseType ?? '',
     row.startDate ?? '',
     row.endDate ?? '',
     row.reimbursed ? 'TRUE' : 'FALSE',
@@ -134,8 +137,8 @@ export async function listAllReceipts(token: string, spreadsheetId: string): Pro
 }
 
 export async function updateReimbursedCell(token: string, spreadsheetId: string, rowNumber: number, value: boolean): Promise<void> {
-  // reimbursed column is H (8th) => index 7
-  const range = `${TAB_NAME}!H${rowNumber}:H${rowNumber}`;
+  // reimbursed column is now I (9th) after adding expenseType
+  const range = `${TAB_NAME}!I${rowNumber}:I${rowNumber}`;
   await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=RAW`, {
     method: 'PUT',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -153,13 +156,14 @@ function toReceiptRow(r: any[], rowNumber: number): ReceiptRow {
     patientName: get(2) || undefined,
     amount: n(get(3)),
     currency: get(4) || undefined,
-    startDate: get(5) || undefined,
-    endDate: get(6) || undefined,
-    reimbursed: (get(7) || '').toLowerCase() === 'true',
-    pdfFileId: get(8) || undefined,
-    originalFileId: get(9) || undefined,
-    folderPath: get(10) || undefined,
-    checksum: get(11) || undefined,
+    expenseType: get(5) || undefined,
+    startDate: get(6) || undefined,
+    endDate: get(7) || undefined,
+    reimbursed: (get(8) || '').toLowerCase() === 'true',
+    pdfFileId: get(9) || undefined,
+    originalFileId: get(10) || undefined,
+    folderPath: get(11) || undefined,
+    checksum: get(12) || undefined,
   };
 }
 

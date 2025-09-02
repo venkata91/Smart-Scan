@@ -6,7 +6,7 @@ import { useGoogleAuth } from '../hooks/useGoogleAuth';
 // Switch Dashboard data source to Google Sheets registry
 import { findOrCreateSpreadsheet, listAllReceipts, updateReimbursedCell, deleteRow, type ReceiptRow } from '../google/sheets';
 import { deleteFile } from '../google/drive';
-import { btn as webBtn, input as webInput } from '../web/ui';
+import { btn as webBtn, input as webInput, dropdown as webDropdown, menuItem as webMenuItem } from '../web/ui';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Dashboard'>;
 
@@ -19,6 +19,7 @@ type ReceiptMeta = {
   startDate?: string;
   endDate?: string;
   reimbursed?: boolean;
+  expenseType?: string; // Medical, Dental, Pharmacy, Vision, Unknown
 };
 
 export default function DashboardScreen({ navigation }: Props) {
@@ -35,13 +36,15 @@ export default function DashboardScreen({ navigation }: Props) {
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc'); // native default date sort
   const [search, setSearch] = useState('');
   const [sortCol, setSortCol] = useState<
-    'provider' | 'patient' | 'amount' | 'currency' | 'start' | 'end' | 'reimbursed' | null
+    'provider' | 'patient' | 'amount' | 'currency' | 'type' | 'start' | 'end' | 'reimbursed' | null
   >(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [editing, setEditing] = useState<Record<string, boolean>>({});
   const [drafts, setDrafts] = useState<Record<string, ReceiptMeta>>({});
   const [pageIndex, setPageIndex] = useState<number>(0);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [showProvList, setShowProvList] = useState<string | null>(null);
+  const [showPatList, setShowPatList] = useState<string | null>(null);
   // Web PDF preview state
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -149,6 +152,7 @@ export default function DashboardScreen({ navigation }: Props) {
           case 'patient': va = a.meta.patientName || ''; vb = b.meta.patientName || ''; break;
           case 'amount': va = a.meta.amount ?? 0; vb = b.meta.amount ?? 0; break;
           case 'currency': va = a.meta.currency || ''; vb = b.meta.currency || ''; break;
+          case 'type': va = a.meta.expenseType || 'Unknown'; vb = b.meta.expenseType || 'Unknown'; break;
           case 'start': va = a.meta.startDate || a.meta.date || ''; vb = b.meta.startDate || b.meta.date || ''; break;
           case 'end': va = a.meta.endDate || ''; vb = b.meta.endDate || ''; break;
           case 'reimbursed': va = !!a.meta.reimbursed ? 1 : 0; vb = !!b.meta.reimbursed ? 1 : 0; break;
@@ -216,6 +220,17 @@ export default function DashboardScreen({ navigation }: Props) {
 
   const isWeb = typeof document !== 'undefined';
 
+  const providerOptions = useMemo(() => {
+    const s = new Set<string>();
+    items.forEach(it => { if (it.meta.provider) s.add(it.meta.provider!); });
+    return Array.from(s).sort();
+  }, [items]);
+  const patientOptions = useMemo(() => {
+    const s = new Set<string>();
+    items.forEach(it => { if (it.meta.patientName) s.add(it.meta.patientName!); });
+    return Array.from(s).sort();
+  }, [items]);
+
   async function openPdfPreview(fileId?: string | null) {
     if (!isWeb || !fileId) return;
     if (!accessToken) return;
@@ -272,14 +287,10 @@ export default function DashboardScreen({ navigation }: Props) {
         {isWeb ? (
           <div style={{ display: 'flex', gap: 8 }}>
             <button style={webBtn('primary')} onClick={() => reload()}>Refresh</button>
-            <button style={webBtn('neutral')} onClick={() => setSortOrder((p) => (p === 'desc' ? 'asc' : 'desc'))}>{`Sort: ${sortOrder === 'desc' ? 'Newest' : 'Oldest'}`}</button>
           </div>
         ) : (
           <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
             <Button title="Refresh" onPress={() => reload()} />
-            <View style={{ width: 8 }} />
-            {/* Native sort toggle retained */}
-            <Button title={`Sort: ${sortOrder === 'desc' ? 'Newest' : 'Oldest'}`} onPress={() => setSortOrder((p) => (p === 'desc' ? 'asc' : 'desc'))} />
           </View>
         )}
       </View>
@@ -319,32 +330,7 @@ export default function DashboardScreen({ navigation }: Props) {
           </div>
         </View>
       ) : null}
-      {authRequired ? (
-        <View style={{ marginBottom: 12 }}>
-          <Text style={{ color: '#b00', marginBottom: 8 }}>
-            {stopAutoReload ? 'Too many authorization failures. Please sign in to resume.' : 'Session expired. Please sign in to refresh.'}
-          </Text>
-          <Button title="Sign in with Google" onPress={async () => {
-            const t = await signIn();
-            if (t) {
-              // reset auth failure state and reload
-              setAuthRequired(false);
-              setLoading(true);
-              setAuthFailCount(0);
-              setStopAutoReload(false);
-              const s = startDate; const e = endDate;
-              setStartDate(s);
-              setEndDate(e);
-              reload();
-            }
-          }} />
-          {stopAutoReload ? (
-            <View style={{ marginTop: 8 }}>
-              <Button title="Try again" onPress={() => { setAuthFailCount(0); setStopAutoReload(false); reload(); }} />
-            </View>
-          ) : null}
-        </View>
-      ) : null}
+      {/* Global Sign-in is handled in the app header; local prompt removed */}
       {errorMsg ? <Text style={{ color: '#b00', marginBottom: 12 }}>{errorMsg}</Text> : null}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
         <Text>Status Filter:</Text>
@@ -380,19 +366,20 @@ export default function DashboardScreen({ navigation }: Props) {
       {isWeb ? (
         <div>
         {/* Web table view with inline actions (datatable) — styled */}
-        <div style={{ maxHeight: 560, overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 10, boxShadow: '0 1px 2px rgba(0,0,0,0.04)', background: 'white', paddingRight: 200 }}>
+        <div style={{ maxHeight: 560, overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 10, boxShadow: '0 1px 2px rgba(0,0,0,0.04)', background: 'white', paddingRight: 320 }}>
         {/* @ts-ignore */}
         <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: 13, tableLayout: 'fixed', fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif' }}>
           <thead>
             <tr>
-              {renderSortTh('Provider', 'provider', sortCol, sortDir, setSortCol, setSortDir, '20%')}
-              {renderSortTh('Patient', 'patient', sortCol, sortDir, setSortCol, setSortDir, '15%')}
-              {renderSortTh('Amount', 'amount', sortCol, sortDir, setSortCol, setSortDir, '10%')}
-              {renderSortTh('Currency', 'currency', sortCol, sortDir, setSortCol, setSortDir, '8%')}
-              {renderSortTh('Start', 'start', sortCol, sortDir, setSortCol, setSortDir, '12%')}
-              {renderSortTh('End', 'end', sortCol, sortDir, setSortCol, setSortDir, '12%')}
-              {renderSortTh('Reimbursed', 'reimbursed', sortCol, sortDir, setSortCol, setSortDir, '10%')}
-              <th style={{ position: 'sticky', right: 0, top: 0, zIndex: 2, background: 'var(--bg, white)', textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 10, width: '13%' }}>Actions</th>
+              {renderSortTh('Provider', 'provider', sortCol, sortDir, setSortCol, setSortDir, '18%')}
+              {renderSortTh('Patient', 'patient', sortCol, sortDir, setSortCol, setSortDir, '14%')}
+              {renderSortTh('Amount', 'amount', sortCol, sortDir, setSortCol, setSortDir, '8%')}
+              {renderSortTh('Currency', 'currency', sortCol, sortDir, setSortCol, setSortDir, '7%')}
+              {renderSortTh('Type', 'type', sortCol, sortDir, setSortCol, setSortDir, '9%')}
+              {renderSortTh('Start', 'start', sortCol, sortDir, setSortCol, setSortDir, '10%')}
+              {renderSortTh('End', 'end', sortCol, sortDir, setSortCol, setSortDir, '10%')}
+              {renderSortTh('Reimbursed', 'reimbursed', sortCol, sortDir, setSortCol, setSortDir, '8%')}
+              <th style={{ position: 'sticky', right: 0, top: 0, zIndex: 5, background: 'var(--bg, white)', textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 6, width: '12%' }}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -400,7 +387,7 @@ export default function DashboardScreen({ navigation }: Props) {
               <tr key={it.id} id={`row-${it.id}`} style={{ borderBottom: '1px solid #f1f5f9', background: idx % 2 === 0 ? '#ffffff' : '#f8fafc' }}>
                 {!editing[it.id] ? (
                   <>
-                    <td style={{ padding: 8, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <td style={{ padding: 6, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {it.row.pdfFileId ? (
                         <a href="#" onClick={(e: any) => { e.preventDefault(); openPdfPreview(it.row.pdfFileId); }}>
                           {it.meta.provider || ''}
@@ -409,16 +396,17 @@ export default function DashboardScreen({ navigation }: Props) {
                         it.meta.provider || ''
                       )}
                     </td>
-                    <td style={{ padding: 8, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{normalizeName(it.meta.patientName || '')}</td>
-                    <td style={{ padding: 8, minWidth: 0, whiteSpace: 'nowrap' }}>{formatAmount(it.meta.amount)} </td>
-                    <td style={{ padding: 8, minWidth: 0, whiteSpace: 'nowrap' }}>{it.meta.currency || ''}</td>
-                    <td style={{ padding: 8, minWidth: 0, whiteSpace: 'nowrap' }}>{it.meta.startDate || (it.meta as any).date || ''}</td>
-                    <td style={{ padding: 8, minWidth: 0, whiteSpace: 'nowrap' }}>{it.meta.endDate || ''}</td>
-                    <td style={{ padding: 8, minWidth: 0, whiteSpace: 'nowrap' }}>{it.meta.reimbursed ? 'Yes' : 'No'}</td>
-                    <td style={{ padding: 8, position: 'sticky', right: 0, background: 'var(--bg, white)', minWidth: 200, borderLeft: '1px solid #e5e7eb' }}>
-                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                        <button style={webBtn('primary','sm')} onClick={() => startWebEdit(it.id, it.meta)}>Edit</button>
-                        <button style={webBtn(it.meta.reimbursed ? 'neutral' : 'success','sm')} disabled={!!updating[it.id]} onClick={async () => {
+                    <td style={{ padding: 6, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{normalizeName(it.meta.patientName || '')}</td>
+                    <td style={{ padding: 6, minWidth: 0, whiteSpace: 'nowrap' }}>{formatAmount(it.meta.amount)} </td>
+                    <td style={{ padding: 6, minWidth: 0, whiteSpace: 'nowrap' }}>{it.meta.currency || ''}</td>
+                    <td style={{ padding: 6, minWidth: 0, whiteSpace: 'nowrap' }}>{it.meta.expenseType || 'Unknown'}</td>
+                    <td style={{ padding: 6, minWidth: 0, whiteSpace: 'nowrap' }}>{it.meta.startDate || (it.meta as any).date || ''}</td>
+                    <td style={{ padding: 6, minWidth: 0, whiteSpace: 'nowrap' }}>{it.meta.endDate || ''}</td>
+                    <td style={{ padding: 6, minWidth: 0, whiteSpace: 'nowrap' }}>{it.meta.reimbursed ? 'Yes' : 'No'}</td>
+                    <td style={{ padding: 6, position: 'sticky', right: 0, background: 'var(--bg, white)', minWidth: 200, borderLeft: '1px solid #e5e7eb', zIndex: 4 }}>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'nowrap', justifyContent: 'flex-end' }}>
+                        <button style={webBtn('primary','sm')} title="Edit" onClick={() => startWebEdit(it.id, it.meta)}>✏️</button>
+                        <button style={webBtn(it.meta.reimbursed ? 'neutral' : 'success','sm')} title={it.meta.reimbursed ? 'Unmark reimbursed' : 'Mark reimbursed'} disabled={!!updating[it.id]} onClick={async () => {
                           if (!accessToken) return;
                           setUpdating((u) => ({ ...u, [it.id]: true }));
                           try {
@@ -441,8 +429,8 @@ export default function DashboardScreen({ navigation }: Props) {
                           } finally {
                             setUpdating((u) => ({ ...u, [it.id]: false }));
                           }
-                        }}>{it.meta.reimbursed ? 'Unmark' : 'Mark'}</button>
-                        <button style={webBtn('danger','sm')} disabled={!!updating[it.id]} onClick={async () => {
+                        }}>{it.meta.reimbursed ? '☐' : '☑'}</button>
+                        <button style={webBtn('danger','sm')} title="Delete" disabled={!!updating[it.id]} onClick={async () => {
                           if (!accessToken) return;
                           if (!confirm('Delete this row from the ledger?')) return;
                           const alsoFiles = confirm('Also delete the associated files from Drive?');
@@ -471,46 +459,123 @@ export default function DashboardScreen({ navigation }: Props) {
                           } finally {
                             setUpdating((u) => ({ ...u, [it.id]: false }));
                           }
-                        }}>Delete</button>
+                        }}>🗑️</button>
                       </div>
                     </td>
                   </>
                 ) : (
                   <>
-                    <td style={{ padding: 8 }}>
-                      <input id={`edit-provider-${it.id}`} style={webInput()} value={drafts[it.id]?.provider || ''} onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], provider: e.target.value } }))} />
+                    <td style={{ padding: 6 }}>
+                      <div style={{ position: 'relative' }}>
+                        <input
+                          id={`edit-provider-${it.id}`}
+                          style={webInput()}
+                          value={drafts[it.id]?.provider || ''}
+                          onFocus={() => setShowProvList(it.id)}
+                          onBlur={() => setTimeout(() => setShowProvList(cur => (cur === it.id ? null : cur)), 120)}
+                          onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], provider: e.target.value } }))}
+                        />
+                        {showProvList === it.id ? (
+                          // @ts-ignore
+                          <div style={{ ...webDropdown(), zIndex: 5 }}>
+                            {providerOptions
+                              .filter(p => p.toLowerCase().includes(String(drafts[it.id]?.provider || '').toLowerCase()))
+                              .slice(0, 8)
+                              .map(p => (
+                                // @ts-ignore
+                                <button key={p} style={webMenuItem()} onMouseDown={(e: any) => e.preventDefault()} onClick={() => { setDrafts(d => ({ ...d, [it.id]: { ...d[it.id], provider: p } })); setShowProvList(null); }}>{p}</button>
+                              ))}
+                          </div>
+                        ) : null}
+                      </div>
                     </td>
-                    <td style={{ padding: 8 }}>
-                      <input id={`edit-patient-${it.id}`} style={webInput()} value={drafts[it.id]?.patientName || ''} onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], patientName: normalizeName(e.target.value) } }))} />
+                    <td style={{ padding: 6 }}>
+                      <div style={{ position: 'relative' }}>
+                        <input
+                          id={`edit-patient-${it.id}`}
+                          style={webInput()}
+                          value={drafts[it.id]?.patientName || ''}
+                          onFocus={() => setShowPatList(it.id)}
+                          onBlur={() => setTimeout(() => setShowPatList(cur => (cur === it.id ? null : cur)), 120)}
+                          onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], patientName: normalizeName(e.target.value) } }))}
+                        />
+                        {showPatList === it.id ? (
+                          // @ts-ignore
+                          <div style={{ ...webDropdown(), zIndex: 5 }}>
+                            {patientOptions
+                              .filter(p => p.toLowerCase().includes(String(drafts[it.id]?.patientName || '').toLowerCase()))
+                              .slice(0, 8)
+                              .map(p => (
+                                // @ts-ignore
+                                <button key={p} style={webMenuItem()} onMouseDown={(e: any) => e.preventDefault()} onClick={() => { setDrafts(d => ({ ...d, [it.id]: { ...d[it.id], patientName: normalizeName(p) } })); setShowPatList(null); }}>{p}</button>
+                              ))}
+                          </div>
+                        ) : null}
+                      </div>
                     </td>
-                    <td style={{ padding: 8 }}>
-                      <input style={webInput()} inputMode="decimal" type="text" value={draftDollarValue(drafts[it.id]?.amount)} onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], amount: Number((e.target.value || '0').replace(/[^0-9.]/g, '')) } }))} />
+                    <td style={{ padding: 6 }}>
+                      <input
+                        style={webInput()}
+                        inputMode="decimal"
+                        type="text"
+                        value={draftDollarValue(drafts[it.id]?.amount)}
+                        onChange={(e) => {
+                          const raw = (e.target.value || '').trim();
+                          const sanitized = raw.replace(/[^0-9.]/g, '');
+                          setDrafts((d) => ({
+                            ...d,
+                            [it.id]: {
+                              ...d[it.id],
+                              amount: raw === '' ? undefined : Number(sanitized || '0'),
+                            },
+                          }));
+                        }}
+                      />
                     </td>
-                    <td style={{ padding: 8 }}>
+                    <td style={{ padding: 6 }}>
                       <input style={webInput()} value={drafts[it.id]?.currency || ''} onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], currency: e.target.value } }))} />
                     </td>
-                    <td style={{ padding: 8 }}>
+                    <td style={{ padding: 6 }}>
+                      {/* @ts-ignore */}
+                      <select style={webInput()} value={drafts[it.id]?.expenseType || it.meta.expenseType || 'Unknown'} onChange={(e: any) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], expenseType: e.target.value } }))}>
+                        <option>Medical</option>
+                        <option>Dental</option>
+                        <option>Pharmacy</option>
+                        <option>Vision</option>
+                        <option>Unknown</option>
+                      </select>
+                    </td>
+                    <td style={{ padding: 6 }}>
                       <input style={webInput()} type="date" value={drafts[it.id]?.startDate || ''} onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], startDate: e.target.value } }))} />
                     </td>
-                    <td style={{ padding: 8 }}>
+                    <td style={{ padding: 6 }}>
                       <input style={webInput()} type="date" value={drafts[it.id]?.endDate || ''} onChange={(e) => setDrafts((d) => ({ ...d, [it.id]: { ...d[it.id], endDate: e.target.value } }))} />
                     </td>
-                    <td style={{ padding: 8 }}>{it.meta.reimbursed ? 'Yes' : 'No'}</td>
-                    <td style={{ padding: 8, position: 'sticky', right: 0, background: 'var(--bg, white)', minWidth: 200, borderLeft: '1px solid #e5e7eb' }}>
-                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                        <button style={webBtn('primary','sm')} disabled={!!updating[it.id]} onClick={async () => {
+                    <td style={{ padding: 6 }}>{it.meta.reimbursed ? 'Yes' : 'No'}</td>
+                    <td style={{ padding: 6, position: 'sticky', right: 0, background: 'var(--bg, white)', minWidth: 200, borderLeft: '1px solid #e5e7eb', zIndex: 4 }}>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'nowrap', justifyContent: 'flex-end' }}>
+                        <button style={webBtn('primary','sm')} title="Save" disabled={!!updating[it.id]} onClick={async () => {
                           if (!accessToken) return;
                           setUpdating((u) => ({ ...u, [it.id]: true }));
                           try {
                             const draft = drafts[it.id] || {};
+                            const start = (draft.startDate && draft.startDate.trim()) ? draft.startDate : (it.meta as any).startDate;
+                            const end = (draft.endDate && draft.endDate.trim()) ? draft.endDate : (it.meta as any).endDate;
+                            const providerVal = (typeof draft.provider === 'string' && draft.provider.trim() !== '') ? draft.provider : (it.meta.provider || '');
+                            const patientVal = (typeof draft.patientName === 'string' && draft.patientName.trim() !== '') ? normalizeName(draft.patientName) : (it.meta.patientName || '');
+                            const amountProvided = (typeof draft.amount === 'number' && !Number.isNaN(draft.amount));
+                            const amountVal = amountProvided ? draft.amount : (it.meta as any).amount;
+                            const currencyVal = (typeof draft.currency === 'string' && draft.currency.trim() !== '') ? draft.currency : (it.meta.currency || '');
+                            const typeVal = (typeof draft.expenseType === 'string' && draft.expenseType.trim() !== '') ? draft.expenseType : (it.meta.expenseType || 'Unknown');
                             const newMeta: ReceiptMeta & Record<string, any> = {
                               ...it.meta,
-                              provider: ((draft.provider ?? it.meta.provider) || ''),
-                              patientName: normalizeName(((draft.patientName ?? it.meta.patientName) || '')),
-                              startDate: draft.startDate ?? (it.meta as any).startDate,
-                              endDate: draft.endDate ?? (it.meta as any).endDate,
-                              amount: draft.amount ?? (it.meta as any).amount,
-                              currency: draft.currency ?? it.meta.currency,
+                              provider: providerVal,
+                              patientName: patientVal,
+                              expenseType: typeVal,
+                              startDate: start,
+                              endDate: end,
+                              amount: amountVal,
+                              currency: currencyVal,
                             } as any;
                             let token = accessToken;
                             const withAuthRetry = async <T,>(fn: (t: string) => Promise<T>): Promise<T> => {
@@ -523,15 +588,16 @@ export default function DashboardScreen({ navigation }: Props) {
                               }
                             };
                             const spreadsheetId = await withAuthRetry((t) => findOrCreateSpreadsheet(t));
-                            const rowValues = [
-                              newMeta.provider ?? '',
-                              newMeta.patientName ?? '',
-                              newMeta.amount ?? '',
-                              newMeta.currency ?? '',
-                              (newMeta as any).startDate ?? '',
-                              (newMeta as any).endDate ?? '',
-                            ];
-                            const range = `Receipts!B${it.row.rowNumber}:G${it.row.rowNumber}`;
+                    const rowValues = [
+                      newMeta.provider ?? '',
+                      newMeta.patientName ?? '',
+                      newMeta.amount ?? '',
+                      newMeta.currency ?? '',
+                      newMeta.expenseType ?? 'Unknown',
+                      (newMeta as any).startDate ?? '',
+                      (newMeta as any).endDate ?? '',
+                    ];
+                    const range = `Receipts!B${it.row.rowNumber}:H${it.row.rowNumber}`;
                             await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=RAW`, {
                               method: 'PUT',
                               headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -544,8 +610,8 @@ export default function DashboardScreen({ navigation }: Props) {
                           } finally {
                             setUpdating((u) => ({ ...u, [it.id]: false }));
                           }
-                        }}>Save</button>
-                        <button style={webBtn('neutral','sm')} onClick={() => setEditing((e) => ({ ...e, [it.id]: false }))}>Cancel</button>
+                        }}>💾</button>
+                        <button style={webBtn('neutral','sm')} title="Cancel" onClick={() => setEditing((e) => ({ ...e, [it.id]: false }))}>✖</button>
                       </div>
                     </td>
                   </>
@@ -595,9 +661,9 @@ export default function DashboardScreen({ navigation }: Props) {
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
                     <Text>Reimbursed: {it.meta.reimbursed ? 'Yes' : 'No'}</Text>
                     <View style={{ flexDirection: 'row', gap: 8 }}>
-                      <Button title="Edit" onPress={() => { setEditing((e) => ({ ...e, [it.id]: true })); setDrafts((d) => ({ ...d, [it.id]: { ...it.meta } })); }} />
+                      <Button title="✏️" onPress={() => { setEditing((e) => ({ ...e, [it.id]: true })); setDrafts((d) => ({ ...d, [it.id]: { ...it.meta } })); }} />
                       <Button
-                        title={updating[it.id] ? 'Saving…' : it.meta.reimbursed ? 'Mark Unreimbursed' : 'Mark Reimbursed'}
+                        title={it.meta.reimbursed ? '☐' : '☑'}
                         disabled={!!updating[it.id]}
                         onPress={async () => {
                           if (!accessToken) return;
@@ -626,7 +692,7 @@ export default function DashboardScreen({ navigation }: Props) {
                         }}
                       />
                       <Button
-                        title="Delete"
+                        title="🗑️"
                         color="#b91c1c"
                         onPress={async () => {
                           if (!accessToken) return;
@@ -690,14 +756,21 @@ export default function DashboardScreen({ navigation }: Props) {
                       setUpdating((u) => ({ ...u, [it.id]: true }));
                       try {
                         const draft = drafts[it.id] || {};
+                        const start2 = (draft.startDate && draft.startDate.trim()) ? draft.startDate : (it.meta as any).startDate;
+                        const end2 = (draft.endDate && draft.endDate.trim()) ? draft.endDate : (it.meta as any).endDate;
+                        const providerVal2 = (typeof draft.provider === 'string' && draft.provider.trim() !== '') ? draft.provider : (it.meta.provider || '');
+                        const patientVal2 = (typeof draft.patientName === 'string' && draft.patientName.trim() !== '') ? draft.patientName : (it.meta.patientName || '');
+                        const amountProvided2 = (typeof draft.amount === 'number' && !Number.isNaN(draft.amount));
+                        const amountVal2 = amountProvided2 ? draft.amount : (it.meta as any).amount;
+                        const currencyVal2 = (typeof draft.currency === 'string' && draft.currency.trim() !== '') ? draft.currency : (it.meta.currency || '');
                         const newMeta: ReceiptMeta & Record<string, any> = {
                           ...it.meta,
-                          provider: draft.provider ?? it.meta.provider,
-                          patientName: draft.patientName ?? it.meta.patientName,
-                          startDate: draft.startDate ?? (it.meta as any).startDate,
-                          endDate: draft.endDate ?? (it.meta as any).endDate,
-                          amount: draft.amount ?? (it.meta as any).amount,
-                          currency: draft.currency ?? it.meta.currency,
+                          provider: providerVal2,
+                          patientName: patientVal2,
+                          startDate: start2,
+                          endDate: end2,
+                          amount: amountVal2,
+                          currency: currencyVal2,
                         } as any;
                         let token = accessToken;
                         const withAuthRetry = async <T,>(fn: (t: string) => Promise<T>): Promise<T> => {
@@ -710,15 +783,16 @@ export default function DashboardScreen({ navigation }: Props) {
                           }
                         };
                         const spreadsheetId = await withAuthRetry((t) => findOrCreateSpreadsheet(t));
-                        const rowValues = [
-                          newMeta.provider ?? '',
-                          newMeta.patientName ?? '',
-                          newMeta.amount ?? '',
-                          newMeta.currency ?? '',
-                          (newMeta as any).startDate ?? '',
-                          (newMeta as any).endDate ?? '',
-                        ];
-                        const range = `Receipts!B${it.row.rowNumber}:G${it.row.rowNumber}`;
+                    const rowValues = [
+                      newMeta.provider ?? '',
+                      newMeta.patientName ?? '',
+                      newMeta.amount ?? '',
+                      newMeta.currency ?? '',
+                      newMeta.expenseType ?? 'Unknown',
+                      (newMeta as any).startDate ?? '',
+                      (newMeta as any).endDate ?? '',
+                    ];
+                    const range = `Receipts!B${it.row.rowNumber}:H${it.row.rowNumber}`;
                         await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=RAW`, {
                           method: 'PUT',
                           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },

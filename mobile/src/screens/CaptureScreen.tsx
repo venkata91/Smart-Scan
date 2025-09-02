@@ -234,6 +234,7 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
           patientName: normalizeName(patientName),
           amount: Number((amount || '0').replace(/[^0-9.]/g, '')) || 0,
           currency,
+          expenseType: 'Unknown',
           startDate: startDate || undefined,
           endDate: hasEndDate && endDate ? endDate : undefined,
           reimbursed,
@@ -303,6 +304,7 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
           patientName: normalizeName(patientName),
           amount: Number((amount || '0').replace(/[^0-9.]/g, '')) || 0,
           currency,
+          expenseType: 'Unknown',
           startDate: startDate || undefined,
           endDate: hasEndDate && endDate ? endDate : undefined,
           reimbursed,
@@ -536,7 +538,7 @@ export default function CaptureScreen({ embedded }: CaptureProps) {
           )}
         </>
       )}
-      <Text style={{ color: '#666', marginTop: 6 }}>{status || (accessToken ? 'Signed in' : 'Not signed in — will prompt on upload')}</Text>
+      {status ? <Text style={{ color: '#666', marginTop: 6 }}>{status}</Text> : null}
     </ScrollView>
   );
 }
